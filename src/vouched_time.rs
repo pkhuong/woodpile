@@ -32,6 +32,9 @@ const BASE_TIME_CHECK: raffle::CheckingParameters =
 /// [`VouchedTime`] is constructed with a trusted base time, we assume it's not
 /// (deliberately) too far in the future, and likely not too far in the past
 /// either.
+///
+/// In this library, we use the term "local time" to explicitly refer to each
+/// machine's approximation of UTC.
 #[derive(Clone, Copy, Debug)]
 pub struct VouchedTime {
     local_time: time::PrimitiveDateTime,

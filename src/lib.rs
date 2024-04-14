@@ -1,4 +1,4 @@
-mod close;
+pub mod close;
 mod vouched_time;
 
 use std::io::Result;
@@ -6,21 +6,22 @@ use std::path::Path;
 use std::path::PathBuf;
 use time::Duration;
 
-pub use close::close_epoch_subdir;
-pub use close::epoch_subdir_is_being_closed;
-pub use close::start_closing_epoch_subdir;
-pub use close::CloseEpochOptions;
 pub use vouched_time::VouchedTime;
+pub use vouched_time::MAX_BACKWARD_DISCREPANCY_MS;
+pub use vouched_time::MAX_FORWARD_DISCREPANCY_MS;
 
-/// We assume clocks differ by at most this many seconds.  We try to
-/// preserve correctness when the actual error exceeds this value,
-/// but the will be strange behaviour.
+/// We assume any two clocks differ by at most this many seconds.  We
+/// try to avoid crashes when the actual error exceeds this value, but
+/// there will be strange behaviour.
 ///
 /// This error bound accounts for the maximum deterministic difference
-/// of 1 second around leap seconds (each clock is either in the
-/// "timezone" before or after the leap second, or it's smeared
-/// in the middle), as well as 2-way clock synchronisation error.
-const CLOCK_ERROR_BOUND: Duration = Duration::new(2, 0);
+/// of 1 second around leap seconds (each clock may be in the
+/// "timezone" before or after the leap second, or smeared in the
+/// middle), as well as clock synchronisation error on both sides.
+///
+/// The maximum round-trip times between two AWS regions is around
+/// 400 ms, so a whole second of total clock error seems generous.
+pub const CLOCK_ERROR_BOUND: Duration = Duration::new(2, 0);
 
 /// The period at which we open a new epoch.  For example, the current
 /// value for 5 means that we'll open an epoch at the top of the hour,
@@ -43,7 +44,7 @@ const EPOCH_WRITE_DURATION: Duration = Duration::new(7, 0);
 ///
 /// Only after that time are closers allowed to start the snapshotting
 /// process, and thus reject late writes.
-const EPOCH_WRITE_LEEWAY: Duration = Duration::new(0, 900_000_000);
+pub const EPOCH_WRITE_LEEWAY: Duration = Duration::new(0, 900_000_000);
 
 const LOG_EXTENSION: &str = "log";
 
@@ -114,6 +115,8 @@ fn get_epoch_close_time(epoch: &Path) -> Result<time::PrimitiveDateTime> {
     Ok(time::PrimitiveDateTime::new(result.date(), result.time()))
 }
 
+/// Returns the path where we expect to find the latest epoch
+/// subdirectory that contains `now`, under `directory`.
 pub fn construct_epoch_subdirectory(directory: PathBuf, now: time::PrimitiveDateTime) -> PathBuf {
     let mut bag = directory;
 
