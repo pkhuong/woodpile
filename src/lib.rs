@@ -1,3 +1,4 @@
+mod close;
 mod vouched_time;
 
 use std::io::Result;
@@ -5,6 +6,10 @@ use std::path::Path;
 use std::path::PathBuf;
 use time::Duration;
 
+pub use close::close_epoch_subdir;
+pub use close::epoch_subdir_is_being_closed;
+pub use close::start_closing_epoch_subdir;
+pub use close::CloseEpochOptions;
 pub use vouched_time::VouchedTime;
 
 /// We assume clocks differ by at most this many seconds.  We try to
@@ -39,6 +44,8 @@ const EPOCH_WRITE_DURATION: Duration = Duration::new(7, 0);
 /// Only after that time are closers allowed to start the snapshotting
 /// process, and thus reject late writes.
 const EPOCH_WRITE_LEEWAY: Duration = Duration::new(0, 900_000_000);
+
+const LOG_EXTENSION: &str = "log";
 
 // Check important properties for the constants above.
 #[test]
