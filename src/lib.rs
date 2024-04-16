@@ -116,13 +116,17 @@ fn get_epoch_close_time(epoch: &Path) -> Result<time::PrimitiveDateTime> {
 }
 
 /// Returns the path where we expect to find the latest epoch
-/// subdirectory that contains `now`, under `directory`.
-pub fn construct_epoch_subdirectory(directory: PathBuf, now: time::PrimitiveDateTime) -> PathBuf {
+/// subdirectory that contains `now`, under `directory`, as
+/// well as the epoch's write deadline.
+pub fn construct_epoch_subdirectory(
+    directory: PathBuf,
+    now: time::PrimitiveDateTime,
+) -> (PathBuf, time::PrimitiveDateTime) {
     let mut bag = directory;
 
     let unix = now.assume_utc().unix_timestamp();
     let granularity = EPOCH_PERIOD as i64;
-    let deadline =
+    let deadline: i64 =
         (granularity * (unix / granularity)).saturating_add(EPOCH_WRITE_DURATION.whole_seconds());
 
     bag.push(format!("{}", now.date()));
@@ -142,7 +146,12 @@ pub fn construct_epoch_subdirectory(directory: PathBuf, now: time::PrimitiveDate
         deadline
     );
 
-    bag
+    let deadline = match time::OffsetDateTime::from_unix_timestamp(deadline) {
+        Ok(deadline) => time::PrimitiveDateTime::new(deadline.date(), deadline.time()),
+        Err(_) => time::PrimitiveDateTime::MAX,
+    };
+
+    (bag, deadline)
 }
 
 #[test]
@@ -152,12 +161,18 @@ fn test_epoch_bag_subdirectory() {
     assert_eq!(
         construct_epoch_subdirectory("/tmp/test".into(), datetime!(2024-04-07 16:01:32)),
         // Sun Apr  7 04:01:37 PM UTC 2024
-        PathBuf::from(format!("/tmp/test/2024-04-07/16/01:30-{:x}", 1712505697))
+        (
+            PathBuf::from(format!("/tmp/test/2024-04-07/16/01:30-{:x}", 1712505697)),
+            datetime!(2024-04-07 16:01:37)
+        )
     );
     assert_eq!(
         construct_epoch_subdirectory("/tmp/test2/".into(), datetime!(2024-04-07 13:02:35)),
         // Sun Apr  7 01:02:42 PM UTC 2024
-        PathBuf::from(format!("/tmp/test2/2024-04-07/13/02:35-{:x}", 1712494962))
+        (
+            PathBuf::from(format!("/tmp/test2/2024-04-07/13/02:35-{:x}", 1712494962)),
+            datetime!(2024-04-07 13:02:42)
+        )
     );
 }
 

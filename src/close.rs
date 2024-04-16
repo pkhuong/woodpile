@@ -340,6 +340,7 @@ fn test_being_closed_empty() {
 
     let subdir =
         crate::construct_epoch_subdirectory("./test".into(), datetime!(2024-04-07 16:01:32))
+            .0
             .into_os_string()
             .into_string()
             .unwrap();
@@ -363,6 +364,7 @@ fn test_being_closed_not_yet() {
         "./test_not_yet".into(),
         datetime!(2024-04-07 16:01:32),
     )
+    .0
     .into_os_string()
     .into_string()
     .unwrap();
@@ -386,6 +388,7 @@ fn test_being_closed_marker() {
 
     let subdir =
         crate::construct_epoch_subdirectory("./test_marker".into(), datetime!(2024-04-07 16:01:32))
+            .0
             .into_os_string()
             .into_string()
             .unwrap();
@@ -415,6 +418,7 @@ fn test_being_closed_marker_2() {
         "./test_marker_2".into(),
         datetime!(2024-04-07 16:01:32),
     )
+    .0
     .into_os_string()
     .into_string()
     .unwrap();
@@ -449,6 +453,7 @@ fn test_already_has_summary() {
         "./test_has_summary".into(),
         datetime!(2024-04-07 16:01:32),
     )
+    .0
     .into_os_string()
     .into_string()
     .unwrap();
@@ -523,6 +528,7 @@ fn test_still_open_after_start() {
         "./test_open_after_start".into(),
         datetime!(2024-04-07 16:01:32),
     )
+    .0
     .into_os_string()
     .into_string()
     .unwrap();
@@ -600,6 +606,7 @@ fn test_reject_early_close() {
         "./test_reject_early".into(),
         datetime!(2024-04-07 16:01:32),
     )
+    .0
     .into_os_string()
     .into_string()
     .unwrap();
@@ -685,6 +692,7 @@ fn test_reject_early_close_2() {
         "./test_reject_early_2".into(),
         datetime!(2024-04-07 16:01:32),
     )
+    .0
     .into_os_string()
     .into_string()
     .unwrap();
@@ -751,6 +759,7 @@ fn test_reject_close_3() {
         "./test_reject_close_3".into(),
         datetime!(2024-04-07 16:01:32),
     )
+    .0
     .into_os_string()
     .into_string()
     .unwrap();
@@ -822,6 +831,7 @@ fn test_reject_close_4() {
         "./test_reject_close_3".into(),
         datetime!(2024-04-07 16:01:32),
     )
+    .0
     .into_os_string()
     .into_string()
     .unwrap();
@@ -891,6 +901,7 @@ fn test_close_one_file() {
         "./test_close_one_file".into(),
         datetime!(2024-04-07 16:01:32),
     )
+    .0
     .into_os_string()
     .into_string()
     .unwrap();
@@ -962,6 +973,7 @@ fn test_close_two_files() {
         "./test_close_two_files".into(),
         datetime!(2024-04-07 16:01:32),
     )
+    .0
     .into_os_string()
     .into_string()
     .unwrap();
@@ -1025,6 +1037,7 @@ fn test_close_twice() {
         "./test_close_twice".into(),
         datetime!(2024-04-07 16:01:32),
     )
+    .0
     .into_os_string()
     .into_string()
     .unwrap();
