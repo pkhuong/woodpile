@@ -1,4 +1,5 @@
 pub mod close;
+pub mod epoch_writer;
 mod vouched_time;
 
 use std::io::Result;
@@ -37,10 +38,10 @@ const EPOCH_PERIOD: u32 = 5;
 ///
 /// At this point, closers are allowed to give an advance warning to
 /// writers that the epoch is about to close.
-const EPOCH_WRITE_DURATION: Duration = Duration::new(7, 0);
+pub const EPOCH_WRITE_DURATION: Duration = Duration::new(7, 0);
 
 /// The amount of time an epoch may still be used for writes after
-/// `EPOCH_WRITE_DURATION`. This leeway gives slow writers extra room.
+/// [`EPOCH_WRITE_DURATION`]. This leeway gives slow writers extra room.
 ///
 /// Only after that time are closers allowed to start the snapshotting
 /// process, and thus reject late writes.
