@@ -1,5 +1,6 @@
 pub mod close;
 pub mod epoch_writer;
+pub mod ppp_lock;
 mod vouched_time;
 
 use std::io::Result;
