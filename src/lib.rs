@@ -1,5 +1,7 @@
+mod byte_arena;
 pub mod close;
 pub mod epoch_writer;
+mod owning_iovec;
 pub mod ppp_lock;
 pub mod sliding_deque;
 pub mod sorted_deque;
@@ -10,6 +12,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use time::Duration;
 
+pub use byte_arena::ByteArena;
+pub use owning_iovec::OwningIovec;
 pub use vouched_time::VouchedTime;
 pub use vouched_time::MAX_BACKWARD_DISCREPANCY_MS;
 pub use vouched_time::MAX_FORWARD_DISCREPANCY_MS;
