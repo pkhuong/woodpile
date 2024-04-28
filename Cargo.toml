@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 nix = "0.28"
 raffle = "0.0.1"
+smallvec = "1"
 tempfile = "3"
 # https://users.rust-lang.org/t/the-state-of-time-in-rust-leaps-and-bounds/107620
 # we only need UTC, and don't really care what happens with leap seconds.

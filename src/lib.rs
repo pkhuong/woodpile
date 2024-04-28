@@ -1,5 +1,6 @@
 mod byte_arena;
 pub mod close;
+pub mod cows;
 pub mod epoch_writer;
 mod owning_iovec;
 pub mod ppp_lock;
