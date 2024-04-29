@@ -2,6 +2,7 @@ pub mod close;
 pub mod epoch_writer;
 pub mod ppp_lock;
 pub mod sliding_deque;
+pub mod sorted_deque;
 mod vouched_time;
 
 use std::io::Result;
