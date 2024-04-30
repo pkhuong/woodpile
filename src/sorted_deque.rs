@@ -208,8 +208,8 @@ where
         }
 
         if idx == 0 {
-            // The `pop_first` method cleans up more thoroughly;
-            // prefer to call that if we're removing the only item.
+            // The `pop_first` method is better for large batches;
+            // prefer to call that if we removed the last item.
             self.pop_first()
         } else if idx == len - 1 {
             self.pop_last()
