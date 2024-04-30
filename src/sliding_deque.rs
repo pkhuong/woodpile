@@ -124,6 +124,12 @@ where
 
         self.container.pop().expect("must be non-empty");
 
+        // We did some work if we get here; check if we reached
+        // an empty state.
+        if self.is_empty() {
+            self.clear();
+        }
+
         Some(ret)
     }
 
@@ -144,6 +150,14 @@ where
         self.maybe_slide();
 
         to_consume
+    }
+
+    /// Removes all elements from this [`SlidingDeque`], and restores
+    /// the internal state to the optimal empty state.
+    #[inline(always)]
+    pub fn clear(&mut self) {
+        self.container.truncate(0);
+        self.consumed_prefix = 0;
     }
 
     #[inline(always)]
