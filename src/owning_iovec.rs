@@ -25,10 +25,22 @@ type Backref = (u64, Option<BackrefInfo>);
 /// backfilled by [`OwningIovec::backfill`].  Backreference are not
 /// clonable, so cloning an `OwningIovec` that has in-flight
 /// backreferences isn't super useful.
-#[derive(Debug)]
+///
+/// A default-constructed [`OwningIovecBackref`] represents a 0-sized
+/// backpatch.
+#[derive(Debug, Default)]
 #[repr(transparent)]
 #[must_use]
 pub struct OwningIovecBackref(Option<(u64, BackrefInfo)>);
+
+impl OwningIovecBackref {
+    pub fn len(&self) -> usize {
+        match self.0 {
+            Some((_, info)) => info.len.into(),
+            None => 0,
+        }
+    }
+}
 
 /// The `GlobalDeque` is a `SlidingDeque` of `IoSlice` that tracks the
 /// current logical (monotonically icnreasing) position and size, and
