@@ -2,6 +2,8 @@ mod byte_arena;
 pub mod close;
 pub mod cows;
 pub mod epoch_writer;
+pub mod hcobs;
+mod hcobs_encoder;
 mod owning_iovec;
 pub mod ppp_lock;
 pub mod sliding_deque;
