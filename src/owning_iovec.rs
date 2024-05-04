@@ -1,8 +1,10 @@
+use std::collections::VecDeque;
 use std::io::IoSlice;
 use std::num::NonZeroUsize;
 
 use smallvec::SmallVec;
 
+use crate::byte_arena::Anchor;
 use crate::byte_arena::ByteArena;
 use crate::sliding_deque::SlidingDeque;
 use crate::sorted_deque::SortedDeque;
@@ -35,10 +37,7 @@ pub struct OwningIovecBackref(Option<(u64, BackrefInfo)>);
 
 impl OwningIovecBackref {
     pub fn len(&self) -> usize {
-        match self.0 {
-            Some((_, info)) => info.len.into(),
-            None => 0,
-        }
+        self.0.map(|(_, info)| info.len.into()).unwrap_or(0)
     }
 }
 
@@ -52,6 +51,7 @@ impl OwningIovecBackref {
 #[derive(Debug, Default, Clone)]
 struct GlobalDeque<'this> {
     slices: SlidingDeque<Vec<IoSlice<'this>>>,
+    anchors: VecDeque<Anchor>, // Each anchor is responsible for a contiguous number (> 0) of slices.
     logical_size: u64,
     consumed_size: u64,
     consumed_slices: u64,
@@ -60,17 +60,46 @@ struct GlobalDeque<'this> {
 impl<'this> GlobalDeque<'this> {
     fn new(slices: Vec<IoSlice<'this>>) -> Self {
         let logical_size = slices.iter().map(|slice| slice.len() as u64).sum();
+        let mut anchors = VecDeque::new();
+
+        if !slices.is_empty() {
+            let count = NonZeroUsize::new(slices.len()).expect("slices isn't empty");
+            anchors.push_back(Anchor::new_with_count(count));
+        }
+
         GlobalDeque {
             slices: slices.into(),
+            anchors,
             logical_size,
             consumed_size: 0,
             consumed_slices: 0,
         }
     }
 
-    fn push(&mut self, slice: IoSlice<'this>) {
+    fn push(&mut self, entry: (IoSlice<'this>, Option<Anchor>)) {
+        let (slice, anchor) = entry;
         self.logical_size += slice.len() as u64;
         self.slices.push_back(slice);
+        if let Some(anchor) = anchor {
+            self.anchors.push_back(anchor);
+        } else {
+            assert!(!self.anchors.is_empty());
+        }
+    }
+
+    fn push_borrowed(&mut self, slice: IoSlice<'this>) {
+        self.logical_size += slice.len() as u64;
+        self.slices.push_back(slice);
+
+        if self.anchors.is_empty() {
+            self.anchors.push_back(Default::default());
+        }
+
+        self.anchors.back_mut().unwrap().increment_count();
+    }
+
+    fn last_anchor(&mut self) -> Option<&mut Anchor> {
+        self.anchors.back_mut()
     }
 
     fn last_logical_slice_index(&self) -> u64 {
@@ -108,6 +137,22 @@ impl<'this> GlobalDeque<'this> {
         let consumed = self.slices.advance(count);
         assert_eq!(consumed, count);
 
+        let mut num_to_drain = consumed;
+        while num_to_drain > 0 {
+            let front = self
+                .anchors
+                .front_mut()
+                .expect("must have front if we consumed some slices");
+            num_to_drain = front.decrement_count(num_to_drain);
+            if front.count() == 0 {
+                // We made progress!
+                self.anchors.pop_front();
+            } else {
+                // Or we're done.
+                assert_eq!(num_to_drain, 0);
+            }
+        }
+
         count
     }
 
@@ -129,9 +174,21 @@ impl<'this> GlobalDeque<'this> {
             return;
         }
 
+        let anchor = self
+            .anchors
+            .back_mut()
+            .expect("must have anchor for slices");
+        assert!(anchor.count() > 0);
+        if anchor.count() < 2 {
+            return;
+        }
+
         if let Some(merger) = collapse(self.slices[len - 2], self.slices[len - 1]) {
             self.slices.pop_back();
             *self.slices.back_mut().unwrap() = merger;
+            // We can only collapse when the two slices are from the same
+            // chunk, so we only had one for both anchor.
+            anchor.decrement_count(1);
         }
     }
 }
@@ -205,10 +262,12 @@ impl<'this> OwningIovec<'this> {
         self.arena.ensure_capacity(len);
     }
 
-    /// Returns the underlying arena.  There is no mutable getter
-    /// to avoid messing up lifetimes by assigning to `self.arena`.
-    pub fn arena(&self) -> &ByteArena {
-        &self.arena
+    /// Returns the underlying arena.
+    pub fn take_arena(&mut self) -> ByteArena {
+        let mut ret = ByteArena::new();
+
+        std::mem::swap(&mut ret, &mut self.arena);
+        ret
     }
 
     /// Returns a prefix of the owned slices such that none of the
@@ -304,7 +363,7 @@ impl<'this> OwningIovec<'this> {
             return;
         }
 
-        self.slices.push(IoSlice::new(slice));
+        self.slices.push_borrowed(IoSlice::new(slice));
         self.optimize();
     }
 
@@ -316,8 +375,9 @@ impl<'this> OwningIovec<'this> {
             return;
         }
 
-        let slice = unsafe { self.arena.copy(src) };
-        self.slices.push(IoSlice::new(slice));
+        let last_anchor = self.slices.last_anchor();
+        let (slice, anchor) = unsafe { self.arena.copy(src, last_anchor) };
+        self.slices.push((IoSlice::new(slice), anchor));
         self.optimize();
     }
 
@@ -328,7 +388,7 @@ impl<'this> OwningIovec<'this> {
                 continue;
             }
 
-            self.slices.push(iov);
+            self.slices.push_borrowed(iov);
             self.optimize();
         }
     }
@@ -501,9 +561,12 @@ fn test_no_optimize_gap() {
     iovs.push_borrowed(b"000");
     iovs.push_copy(b"123");
     // Create a gap in the copied allocations.
-    unsafe { iovs.arena.copy(b"xxx") };
+    let _ = unsafe { iovs.arena.copy(b"xxx", None) };
     iovs.push_copy(b"456");
     iovs.push_borrowed(b"aaa");
+
+    // Force a realloc, make sure this doesn't do weird stuff.
+    iovs.take_arena().ensure_capacity(10000);
 
     assert_eq!(iovs.len(), 4);
     assert_eq!(iovs.total_size(), 12);
@@ -570,9 +633,8 @@ fn test_extend() {
 fn test_inherit() {
     use std::io::Write;
 
-    let arena = ByteArena::new();
-    let mut iovs2 = OwningIovec::new_from_arena(arena.clone());
-    let mut iovs = OwningIovec::new_from_arena(arena);
+    let mut iovs2 = OwningIovec::new();
+    let mut iovs = OwningIovec::new();
 
     iovs.push(b"000");
     iovs2.push_copy(b"123");
@@ -593,15 +655,16 @@ fn test_inherit() {
     assert_eq!(dst, b"000123456aaa");
 }
 
-// Make sure we can clone another iov's arena
+// Make sure we can steal another iov's arena
 #[test]
 fn test_inherit2() {
     use std::io::Write;
 
-    let mut iovs2 = OwningIovec::new();
-    let mut iovs = OwningIovec::new_from_arena(iovs2.arena().clone());
+    let mut iovs2;
+    let mut iovs = OwningIovec::new();
 
     iovs.push(b"000");
+    iovs2 = OwningIovec::new_from_arena(iovs.take_arena());
     iovs2.push_copy(b"123");
     iovs2.push_copy(b"456");
     iovs.extend(iovs2.iovs().unwrap().iter().copied());
