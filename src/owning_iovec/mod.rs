@@ -1,13 +1,13 @@
-use std::collections::VecDeque;
+mod global_deque;
+
 use std::io::IoSlice;
 use std::num::NonZeroUsize;
 
 use smallvec::SmallVec;
 
-use crate::byte_arena::Anchor;
 use crate::byte_arena::ByteArena;
-use crate::sliding_deque::SlidingDeque;
 use crate::sorted_deque::SortedDeque;
+use global_deque::GlobalDeque;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct BackrefInfo {
@@ -36,160 +36,9 @@ type Backref = (u64, Option<BackrefInfo>);
 pub struct OwningIovecBackref(Option<(u64, BackrefInfo)>);
 
 impl OwningIovecBackref {
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.0.map(|(_, info)| info.len.into()).unwrap_or(0)
-    }
-}
-
-/// The `GlobalDeque` is a `SlidingDeque` of `IoSlice` that tracks the
-/// current logical (monotonically icnreasing) position and size, and
-/// maps between that and the physical locations, taking into account
-/// the `IoSlice`s and bytes consumed.
-///
-/// The usage of the `this` lifetime can be unsound; we rely on constraints
-/// on the surrounding [`OwningIovec`] to avoid dangling slices.
-#[derive(Debug, Default, Clone)]
-struct GlobalDeque<'this> {
-    slices: SlidingDeque<Vec<IoSlice<'this>>>,
-    anchors: VecDeque<Anchor>, // Each anchor is responsible for a contiguous number (> 0) of slices.
-    logical_size: u64,
-    consumed_size: u64,
-    consumed_slices: u64,
-}
-
-impl<'this> GlobalDeque<'this> {
-    fn new(slices: Vec<IoSlice<'this>>) -> Self {
-        let logical_size = slices.iter().map(|slice| slice.len() as u64).sum();
-        let mut anchors = VecDeque::new();
-
-        if !slices.is_empty() {
-            let count = NonZeroUsize::new(slices.len()).expect("slices isn't empty");
-            anchors.push_back(Anchor::new_with_count(count));
-        }
-
-        GlobalDeque {
-            slices: slices.into(),
-            anchors,
-            logical_size,
-            consumed_size: 0,
-            consumed_slices: 0,
-        }
-    }
-
-    fn push(&mut self, entry: (IoSlice<'this>, Option<Anchor>)) {
-        let (slice, anchor) = entry;
-        self.logical_size += slice.len() as u64;
-        self.slices.push_back(slice);
-        if let Some(anchor) = anchor {
-            self.anchors.push_back(anchor);
-        } else {
-            assert!(!self.anchors.is_empty());
-        }
-    }
-
-    fn push_borrowed(&mut self, slice: IoSlice<'this>) {
-        self.logical_size += slice.len() as u64;
-        self.slices.push_back(slice);
-
-        if self.anchors.is_empty() {
-            self.anchors.push_back(Default::default());
-        }
-
-        self.anchors.back_mut().unwrap().increment_count();
-    }
-
-    fn last_anchor(&mut self) -> Option<&mut Anchor> {
-        self.anchors.back_mut()
-    }
-
-    fn last_logical_slice_index(&self) -> u64 {
-        self.consumed_slices + (self.slices.len() as u64) - 1
-    }
-
-    fn get_logical_slice(&self, index: u64) -> Option<IoSlice<'this>> {
-        let index = index
-            .wrapping_sub(self.consumed_slices)
-            .min(usize::MAX as u64) as usize;
-
-        self.slices.get(index).copied()
-    }
-
-    /// Gets the prefix of slices we can look at *before* the logical slice index
-    /// `end_logical_slice`.
-    fn get_logical_prefix(&self, end_logical_slice: Option<u64>) -> &[IoSlice<'this>] {
-        let end_logical_slice = end_logical_slice.unwrap_or(u64::MAX);
-        let remainder = end_logical_slice - self.consumed_slices;
-        let take = remainder.min(self.slices.len() as u64) as usize;
-
-        &self.slices[..take]
-    }
-
-    fn consume(&mut self, count: usize) -> usize {
-        let count = count.min(self.slices.len());
-
-        let consumed_size: u64 = self.slices[..count]
-            .iter()
-            .map(|slice| slice.len() as u64)
-            .sum();
-        self.consumed_size += consumed_size;
-        self.consumed_slices += count as u64;
-
-        let consumed = self.slices.advance(count);
-        assert_eq!(consumed, count);
-
-        let mut num_to_drain = consumed;
-        while num_to_drain > 0 {
-            let front = self
-                .anchors
-                .front_mut()
-                .expect("must have front if we consumed some slices");
-            num_to_drain = front.decrement_count(num_to_drain);
-            if front.count() == 0 {
-                // We made progress!
-                self.anchors.pop_front();
-            } else {
-                // Or we're done.
-                assert_eq!(num_to_drain, 0);
-            }
-        }
-
-        count
-    }
-
-    fn num_slices(&self) -> usize {
-        self.slices.len()
-    }
-
-    // Returns the total number of bytes in the slices.
-    fn total_size(&self) -> usize {
-        (self.logical_size - self.consumed_size) as usize
-    }
-
-    fn maybe_collapse_last_pair(
-        &mut self,
-        collapse: impl FnOnce(IoSlice<'this>, IoSlice<'this>) -> Option<IoSlice<'this>>,
-    ) {
-        let len = self.slices.len();
-        if len < 2 {
-            return;
-        }
-
-        let anchor = self
-            .anchors
-            .back_mut()
-            .expect("must have anchor for slices");
-        assert!(anchor.count() > 0);
-        if anchor.count() < 2 {
-            return;
-        }
-
-        if let Some(merger) = collapse(self.slices[len - 2], self.slices[len - 1]) {
-            self.slices.pop_back();
-            *self.slices.back_mut().unwrap() = merger;
-            // We can only collapse when the two slices are from the same
-            // chunk, so we only had one for both anchor.
-            anchor.decrement_count(1);
-        }
     }
 }
 
@@ -272,6 +121,7 @@ impl<'this> OwningIovec<'this> {
 
     /// Returns a prefix of the owned slices such that none of the
     /// returned slices contain a backpatch.
+    #[inline(always)]
     pub fn stable_prefix(&'this self) -> &'this [IoSlice<'this>] {
         // Unwrap because, if we have an element, its value is `Some`.
         let stop_slice_index = self
@@ -282,6 +132,7 @@ impl<'this> OwningIovec<'this> {
     }
 
     /// Peeks at the next stable IoSlice
+    #[inline(always)]
     pub fn front(&'this self) -> Option<IoSlice<'this>> {
         self.stable_prefix().first().copied()
     }
@@ -295,6 +146,7 @@ impl<'this> OwningIovec<'this> {
     /// Pops up to the next `consumed` `IoSlice`s returned by [`Self::stable_prefix`].
     ///
     /// Returns the number of slices consumed
+    #[inline(always)]
     pub fn consume(&mut self, count: usize) -> usize {
         self.slices.consume(count)
     }
@@ -316,16 +168,19 @@ impl<'this> OwningIovec<'this> {
     }
 
     /// Returns the number of slices in the [`OwningIovec`].
+    #[inline(always)]
     pub fn len(&self) -> usize {
         self.slices.num_slices()
     }
 
     /// Determines whether the [`OwningIovec`] contains 0 slices.
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
     /// Returns the total number of bytes in `self.iovs`.
+    #[inline(always)]
     pub fn total_size(&self) -> usize {
         self.slices.total_size()
     }
@@ -344,7 +199,7 @@ impl<'this> OwningIovec<'this> {
         let small = slice.len() <= SMALL_COPY;
         let appendable = (slice.len() <= MAX_OPPORTUNISTIC_COPY)
             & (!self.is_empty())  // Can't extend an empty iovec
-            & (self.slices.slices.last().map(|slice| self.arena.is_last(slice)) == Some(true))
+            & (self.slices.last_slice().map(|slice| self.arena.is_last(&slice)) == Some(true))
             & (self.arena.remaining() >= slice.len());
 
         if small | appendable {
@@ -396,6 +251,7 @@ impl<'this> OwningIovec<'this> {
     /// Returns the contents of this iovec as a single [`Vec<u8>`].
     ///
     /// Returns the stable contents as an error if there is any backreference in flight.
+    #[inline(always)]
     pub fn flatten(&self) -> std::result::Result<Vec<u8>, Vec<u8>> {
         self.flatten_into(Vec::with_capacity(self.total_size()))
     }
@@ -429,10 +285,10 @@ impl<'this> OwningIovec<'this> {
         assert!(!self.is_empty());
 
         let pattern_size = pattern.len();
-        let logical_index = self.slices.logical_size - (pattern_size as u64);
+        let logical_index = self.slices.logical_size() - (pattern_size as u64);
         let info = BackrefInfo {
             slice_index: self.slices.last_logical_slice_index(),
-            begin: self.slices.slices.last().unwrap().len() - pattern_size,
+            begin: self.slices.last_slice().unwrap().len() - pattern_size,
             len: NonZeroUsize::try_from(pattern_size).unwrap(), // We checked for emptiness above
         };
         self.backrefs.push_back((logical_index, Some(info)));
