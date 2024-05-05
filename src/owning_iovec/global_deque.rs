@@ -135,6 +135,35 @@ impl<'this> GlobalDeque<'this> {
         count
     }
 
+    #[inline(never)]
+    pub fn consume_by_bytes(&mut self, count: usize) -> usize {
+        let mut consumed = 0;
+
+        while consumed < count {
+            let Some(slice) = self.slices.front_mut() else {
+                break;
+            };
+
+            let len = slice.len();
+            let num_to_consume = (count - consumed).min(slice.len());
+            let ptr = slice.as_ptr();
+
+            let new_slice = unsafe {
+                std::slice::from_raw_parts(ptr.add(num_to_consume), len - num_to_consume)
+            };
+            if new_slice.is_empty() {
+                self.consume(1);
+            } else {
+                *slice = IoSlice::new(new_slice);
+                self.consumed_size += num_to_consume as u64;
+            }
+
+            consumed += num_to_consume;
+        }
+
+        consumed
+    }
+
     #[inline(always)]
     pub fn num_slices(&self) -> usize {
         self.slices.len()

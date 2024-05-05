@@ -141,12 +141,31 @@ impl<'this> OwningIovec<'this> {
         assert_eq!(consumed, 1);
     }
 
-    /// Pops up to the next `consumed` `IoSlice`s returned by [`Self::stable_prefix`].
+    /// Pops up to the next `count` `IoSlice`s returned by [`Self::stable_prefix`].
     ///
-    /// Returns the number of slices consumed
+    /// Returns the number of slices consumed.
     #[inline(always)]
     pub fn consume(&mut self, count: usize) -> usize {
-        self.slices.consume(count)
+        self.slices.consume(count.min(self.stable_prefix().len()))
+    }
+
+    /// Pops up to the next `count` bytes in the slices returned by [`Self::stable_prefix`].
+    ///
+    /// Returns the number of bytes consumed.
+    #[inline(always)]
+    pub fn advance_by_bytes(&mut self, count: usize) -> usize {
+        let mut stable_count = 0;
+        for slice in self.stable_prefix() {
+            let size = slice.len();
+            if size >= count - stable_count {
+                stable_count = count;
+                break;
+            }
+
+            stable_count += size;
+        }
+
+        self.slices.consume_by_bytes(stable_count)
     }
 
     /// The [`OwningIovec::iovs`] method is the only way to borrow
@@ -404,6 +423,17 @@ fn test_happy_optimize() {
     );
 
     assert_eq!(dst, b"0001234567aaa");
+
+    // now consume 4 bytes.
+    assert_eq!(iovs.advance_by_bytes(4), 4);
+
+    assert_eq!(iovs.flatten().unwrap(), b"234567aaa");
+
+    assert_eq!(iovs.advance_by_bytes(100), 9);
+    assert_eq!(iovs.flatten().unwrap(), b"");
+
+    assert_eq!(iovs.advance_by_bytes(100), 0);
+    assert_eq!(iovs.flatten().unwrap(), b"");
 }
 
 // Make sure we don't optimize when there's a gap.

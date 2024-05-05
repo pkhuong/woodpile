@@ -16,17 +16,7 @@ use std::num::NonZeroUsize;
 use alloc_cache::AllocCache;
 pub use anchor::Anchor;
 
-/// A [`ByteArena`] consists of an allocation cache (a bump pointer region).
-///
-/// Whenever we allocate from a [`ByteArena`], the allocation is associated
-/// with an `Anchor`.  Each anchor has a sticky optional reference to the
-/// backing chunk; when all anchors (and the allocation cache) are dropped,
-/// the backing memory automatically released.  The [`std::sync::Arc`] in
-/// `Anchor` is heavy-weight, so each may stand for multiple allocations.
-///
-/// The relationship between `Anchor`s and [`ByteArena`] allocations isn't
-/// easy to express in the Rust typesystem, so we instead expose an unsafe
-/// interface; this type is only expected to be used via [`crate::OwningIovec`].
+/// A [`ByteArena`] manages allocation caches (bump pointer regions).
 #[derive(Debug, Default)]
 pub struct ByteArena {
     cache: Option<AllocCache>,
@@ -53,6 +43,16 @@ const BUMP_REGION_SIZE_SEQUENCE: [usize; 9] = [
 
 /// We round to 4KB
 const BUMP_REGION_SIZE_FACTOR: usize = 4096;
+
+// Whenever we allocate from a [`ByteArena`], the allocation is associated
+// with an `Anchor`.  Each anchor has a sticky optional reference to the
+// backing chunk; when all anchors (and the allocation cache) are dropped,
+// the backing memory automatically released.  The [`std::sync::Arc`] in
+// `Anchor` is heavy-weight, so each may stand for multiple allocations.
+//
+// The relationship between `Anchor`s and [`ByteArena`] allocations isn't
+// easy to express in the Rust typesystem, so we instead expose an unsafe
+// interface; this type is only expected to be used via [`crate::OwningIovec`].
 
 impl ByteArena {
     /// Creates a fresh arena, with a fresh backing store.
