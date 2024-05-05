@@ -426,10 +426,15 @@ fn test_happy_optimize() {
 
     // now consume 4 bytes.
     assert_eq!(iovs.advance_by_bytes(4), 4);
+    assert_eq!(iovs.len(), 2);
+    assert_eq!(iovs.total_size(), 9);
 
     assert_eq!(iovs.flatten().unwrap(), b"234567aaa");
 
     assert_eq!(iovs.advance_by_bytes(100), 9);
+    assert!(iovs.is_empty());
+    assert_eq!(iovs.len(), 0);
+    assert_eq!(iovs.total_size(), 0);
     assert_eq!(iovs.flatten().unwrap(), b"");
 
     assert_eq!(iovs.advance_by_bytes(100), 0);

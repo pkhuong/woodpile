@@ -156,6 +156,7 @@ impl<'this> GlobalDeque<'this> {
             } else {
                 *slice = IoSlice::new(new_slice);
                 self.consumed_size += num_to_consume as u64;
+                assert_eq!(num_to_consume, count - consumed);
             }
 
             consumed += num_to_consume;
