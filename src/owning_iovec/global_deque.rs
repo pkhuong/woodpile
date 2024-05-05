@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::io::IoSlice;
 use std::num::NonZeroUsize;
 
-use crate::byte_arena::Anchor;
+use super::byte_arena::Anchor;
 use crate::sliding_deque::SlidingDeque;
 
 /// The `GlobalDeque` is a `SlidingDeque` of `IoSlice` that tracks the

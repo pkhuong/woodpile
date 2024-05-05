@@ -1,4 +1,3 @@
-mod byte_arena;
 pub mod close;
 pub mod cows;
 pub mod epoch_writer;
@@ -15,7 +14,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use time::Duration;
 
-pub use byte_arena::ByteArena;
+pub use owning_iovec::ByteArena;
 pub use owning_iovec::OwningIovec;
 pub use vouched_time::VouchedTime;
 pub use vouched_time::MAX_BACKWARD_DISCREPANCY_MS;
