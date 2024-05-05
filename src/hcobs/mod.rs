@@ -1,11 +1,14 @@
 //! This module implements the hybrid consistent-overhead byte/word
 //! stuffing scheme of <https://pvk.ca/Blog/2021/01/11/stuff-your-logs/>,
 //! with an incremental interface.
+mod decoder;
 mod encoder;
 
+use std::io::Result;
 use std::num::NonZeroUsize;
 
 use crate::OwningIovec;
+use decoder::DecoderState;
 use encoder::EncoderState;
 
 pub const RADIX: usize = 0xfd;
@@ -88,6 +91,55 @@ impl<'this> Encoder<'this> {
     }
 }
 
+#[derive(Debug)]
+pub struct Decoder<'this> {
+    state: DecoderState,
+    iovec: OwningIovec<'this>,
+}
+
+impl<'this> Default for Decoder<'this> {
+    fn default() -> Self {
+        Decoder::new()
+    }
+}
+
+impl<'this> Decoder<'this> {
+    pub fn new() -> Self {
+        Decoder::new_from_iovec(OwningIovec::new())
+    }
+
+    pub fn new_from_iovec(iovec: OwningIovec<'this>) -> Self {
+        Decoder {
+            state: DecoderState::new(),
+            iovec,
+        }
+    }
+
+    pub fn iovec(&mut self) -> &mut OwningIovec<'this> {
+        &mut self.iovec
+    }
+
+    pub fn decode(&mut self, data: &'this [u8]) -> Result<()> {
+        let mut state = Default::default();
+        std::mem::swap(&mut state, &mut self.state);
+        self.state = state.decode_borrow(&mut self.iovec, PROD_PARAMS, data)?;
+        Ok(())
+    }
+
+    pub fn decode_copy(&mut self, data: &[u8]) -> Result<()> {
+        let mut state = Default::default();
+        std::mem::swap(&mut state, &mut self.state);
+        self.state = state.decode_copy(&mut self.iovec, PROD_PARAMS, data)?;
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn finish(self) -> Result<OwningIovec<'this>> {
+        self.state.terminate()?;
+        Ok(self.iovec)
+    }
+}
+
 // Smoke test the public interface.
 #[test]
 fn smoke_test() {
@@ -99,6 +151,40 @@ fn smoke_test() {
 
     let iovec = encoder.finish();
     assert_eq!(iovec.flatten().expect("no backpatch left"), b"\x06123456");
+
+    // decode
+    {
+        let mut decoder: Decoder<'_> = Default::default();
+        for slice in iovec.into_iter() {
+            decoder.decode(&slice).expect("success");
+        }
+
+        // Can peek
+        assert_eq!(
+            decoder.iovec().flatten().expect("no backpatch left"),
+            b"123456"
+        );
+
+        // Termination succeeds
+        let output = decoder.finish().expect("success");
+        assert_eq!(output.flatten().expect("no backpatch left"), b"123456");
+    }
+
+    // decode copy
+    {
+        let mut decoder: Decoder<'_> = Default::default();
+        for slice in iovec.into_iter() {
+            decoder.decode_copy(&slice).expect("success");
+        }
+
+        assert_eq!(
+            decoder.iovec().flatten().expect("no backpatch left"),
+            b"123456"
+        );
+
+        let output = decoder.finish().expect("success");
+        assert_eq!(output.flatten().expect("no backpatch left"), b"123456");
+    }
 }
 
 // make sure we can consume incrementally with the prod interface.
@@ -145,4 +231,33 @@ fn prod_peek() {
             0, 0
         ] // terminator
     );
+}
+
+// Exercise error handling in decoding.
+#[test]
+fn prod_decode_bad() {
+    {
+        let mut decoder: Decoder<'_> = Default::default();
+
+        // Bad data.
+        assert!(decoder.decode(b"\xff").is_err());
+    }
+
+    {
+        let mut decoder: Decoder<'_> = Default::default();
+
+        // Same, with decode_copy
+        assert!(decoder.decode_copy(b"\xff").is_err());
+    }
+
+    {
+        let mut decoder: Decoder<'_> = Default::default();
+
+        // Truncated chunk
+        decoder.decode(b"\xfc").expect("ok");
+        decoder.decode_copy(&vec![0u8; 253]).expect("ok");
+
+        // Missing the next chunk.
+        assert!(decoder.finish().is_err());
+    }
 }
