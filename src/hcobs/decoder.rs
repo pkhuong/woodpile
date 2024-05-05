@@ -1,5 +1,4 @@
 use crate::hcobs::Parameters;
-use crate::hcobs::PROD_PARAMS;
 use crate::hcobs::RADIX;
 use crate::hcobs::STUFF_SEQUENCE;
 #[cfg(test)]
@@ -176,7 +175,7 @@ impl MidHeader {
         assert!(!input.is_empty());
 
         let second_byte = input[0] as usize;
-        if second_byte as usize >= RADIX {
+        if second_byte >= RADIX {
             return Err(std::io::Error::other("invalid chunk header second byte"));
         }
 

@@ -251,7 +251,7 @@ where
             }
         }
 
-        self.items.advance(to_drop);
+        let _ = self.items.advance(to_drop);
     }
 }
 

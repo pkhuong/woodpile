@@ -139,6 +139,7 @@ where
     /// Returns the actual number of elements consumed, which may
     /// be less than `count` if we ran out of values.
     #[inline(always)]
+    #[must_use]
     pub fn advance(&mut self, count: usize) -> usize {
         let to_consume = self
             .container
@@ -362,7 +363,7 @@ fn test_vec_advance() {
     deque.push_back(0);
     deque.push_back(1);
 
-    deque.advance(1);
+    let _ = deque.advance(1);
     assert_eq!(deque.pop_back(), Some(1));
     assert_eq!(deque.pop_back(), None);
 }
@@ -374,7 +375,7 @@ fn test_vec_advance2() {
     deque.push_back(0);
     deque.push_back(1);
 
-    deque.advance(2);
+    let _ = deque.advance(2);
     assert_eq!(deque.pop_back(), None);
 }
 

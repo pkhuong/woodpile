@@ -68,6 +68,7 @@ impl<'this> Encoder<'this> {
         }
     }
 
+    #[must_use]
     pub fn iovec(&mut self) -> &mut OwningIovec<'this> {
         &mut self.iovec
     }
@@ -115,6 +116,7 @@ impl<'this> Decoder<'this> {
         }
     }
 
+    #[must_use]
     pub fn iovec(&mut self) -> &mut OwningIovec<'this> {
         &mut self.iovec
     }
@@ -133,7 +135,6 @@ impl<'this> Decoder<'this> {
         Ok(())
     }
 
-    #[must_use]
     pub fn finish(self) -> Result<OwningIovec<'this>> {
         self.state.terminate()?;
         Ok(self.iovec)
@@ -156,7 +157,7 @@ fn smoke_test() {
     {
         let mut decoder: Decoder<'_> = Default::default();
         for slice in iovec.into_iter() {
-            decoder.decode(&slice).expect("success");
+            decoder.decode(slice).expect("success");
         }
 
         // Can peek
@@ -174,7 +175,7 @@ fn smoke_test() {
     {
         let mut decoder: Decoder<'_> = Default::default();
         for slice in iovec.into_iter() {
-            decoder.decode_copy(&slice).expect("success");
+            decoder.decode_copy(slice).expect("success");
         }
 
         assert_eq!(
