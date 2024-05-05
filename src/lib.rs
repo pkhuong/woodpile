@@ -1,5 +1,4 @@
 pub mod close;
-pub mod cows;
 pub mod epoch_writer;
 pub mod hcobs;
 mod owning_iovec;
