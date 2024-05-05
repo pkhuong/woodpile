@@ -466,20 +466,20 @@ fn test_extend() {
 
     // We don't expect empty slices, but we should still drop them on
     // the floot.
-    iovs.extend([IoSlice::new(&[0u8][..0])]);
+    iovs.extend([IoSlice::new(&[0u8][..0]), IoSlice::new(&[0u8])]);
     iovs.push_borrowed(b"aaa");
 
-    assert_eq!(iovs.len(), 3);
-    assert_eq!(iovs.total_size(), 12);
+    assert_eq!(iovs.len(), 4);
+    assert_eq!(iovs.total_size(), 13);
 
     let mut dst = Vec::new();
     assert_eq!(
         dst.write_vectored(iovs.iovs().unwrap())
             .expect("must_succeed"),
-        12
+        13
     );
 
-    assert_eq!(dst, b"000123456aaa");
+    assert_eq!(dst, b"000123456\x00aaa");
 }
 
 // Make sure we can reuse arenas for multiple OwningIovec
