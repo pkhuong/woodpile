@@ -11,9 +11,13 @@ use crate::OwningIovec;
 use decoder::DecoderState;
 use encoder::EncoderState;
 
+/// The encoding radix for size headers in the hybrid byte stuffing scheme.
 pub const RADIX: usize = 0xfd;
 #[allow(clippy::assertions_on_constants)]
 const _: () = assert!(RADIX == 253);
+
+/// The forbidden (stuff) sentinel sequence that is removed by encoding
+/// and restored by decoding.
 pub const STUFF_SEQUENCE: [u8; 2] = [0xfe, 0xfd];
 
 #[derive(Clone, Copy)]
@@ -33,6 +37,9 @@ const TEST_PARAMS: Parameters = Parameters {
     max_subsequent_size: unsafe { NonZeroUsize::new_unchecked(5) },
 };
 
+/// Returns the index (for the first byte) for the first occurrence of
+/// [`STUFF_SEQUENCE`] in the input `bytes`, or `None` if the stuff
+/// sequence can't be found.
 #[inline(never)]
 pub fn find_stuff_sequence(bytes: &[u8]) -> Option<usize> {
     for (idx, window) in bytes.windows(2).enumerate() {
@@ -44,6 +51,7 @@ pub fn find_stuff_sequence(bytes: &[u8]) -> Option<usize> {
     None
 }
 
+/// Byte stuffs arbitrary inputs incrementally.
 #[derive(Debug)]
 pub struct Encoder<'this> {
     state: EncoderState,
@@ -57,10 +65,12 @@ impl<'this> Default for Encoder<'this> {
 }
 
 impl<'this> Encoder<'this> {
+    /// Returns a new encoder with a fresh [`OwningIovec`].
     pub fn new() -> Self {
         Encoder::new_from_iovec(OwningIovec::new())
     }
 
+    /// Returns a new encoder with a pre-existing [`OwningIovec`].
     pub fn new_from_iovec(mut iovec: OwningIovec<'this>) -> Self {
         Encoder {
             state: EncoderState::new(&mut iovec, PROD_PARAMS),
@@ -68,23 +78,32 @@ impl<'this> Encoder<'this> {
         }
     }
 
+    /// Returns the underlying [`OwningIovec`]
+    ///
+    /// Useful to consume incrementally from the output.
     #[must_use]
     pub fn iovec(&mut self) -> &mut OwningIovec<'this> {
         &mut self.iovec
     }
 
+    /// Appends `data` to the bytes to encode.
+    ///
+    /// This method tries to avoid copying large `data`.
     pub fn encode(&mut self, data: &'this [u8]) {
         let mut state = Default::default();
         std::mem::swap(&mut state, &mut self.state);
         self.state = state.encode_borrow(&mut self.iovec, PROD_PARAMS, data);
     }
 
+    /// Appends `data` to the bytes to encode.
     pub fn encode_copy(&mut self, data: &[u8]) {
         let mut state = Default::default();
         std::mem::swap(&mut state, &mut self.state);
         self.state = state.encode_copy(&mut self.iovec, PROD_PARAMS, data);
     }
 
+    /// Flushes any pending encoding bytes and returns the underlying
+    /// [`OwningIovec`].
     #[must_use]
     pub fn finish(mut self) -> OwningIovec<'this> {
         self.state.terminate(&mut self.iovec);
@@ -92,6 +111,7 @@ impl<'this> Encoder<'this> {
     }
 }
 
+/// Attempts to decode byte-stuffed data incrementally.
 #[derive(Debug)]
 pub struct Decoder<'this> {
     state: DecoderState,
@@ -105,10 +125,12 @@ impl<'this> Default for Decoder<'this> {
 }
 
 impl<'this> Decoder<'this> {
+    /// Returns a new decoder with a fresh [`OwningIovec`].
     pub fn new() -> Self {
         Decoder::new_from_iovec(OwningIovec::new())
     }
 
+    /// Returns a new decoder with a pre-existing [`OwningIovec`].
     pub fn new_from_iovec(iovec: OwningIovec<'this>) -> Self {
         Decoder {
             state: DecoderState::new(),
@@ -116,11 +138,17 @@ impl<'this> Decoder<'this> {
         }
     }
 
+    /// Returns the underlying [`OwningIovec`].
+    ///
+    /// Useful to consume incrementally from the output.
     #[must_use]
     pub fn iovec(&mut self) -> &mut OwningIovec<'this> {
         &mut self.iovec
     }
 
+    /// Appends `data` to the bytes to decode.
+    ///
+    /// This methods tries to avoid copying large `data`.
     pub fn decode(&mut self, data: &'this [u8]) -> Result<()> {
         let mut state = Default::default();
         std::mem::swap(&mut state, &mut self.state);
@@ -128,6 +156,7 @@ impl<'this> Decoder<'this> {
         Ok(())
     }
 
+    /// Appends `data` to the bytes to decode.
     pub fn decode_copy(&mut self, data: &[u8]) -> Result<()> {
         let mut state = Default::default();
         std::mem::swap(&mut state, &mut self.state);
@@ -135,6 +164,7 @@ impl<'this> Decoder<'this> {
         Ok(())
     }
 
+    /// Returns the underlying `OwningIovec`, if the input is complete.
     pub fn finish(self) -> Result<OwningIovec<'this>> {
         self.state.terminate()?;
         Ok(self.iovec)

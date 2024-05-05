@@ -167,6 +167,8 @@ where
         self.items.is_empty()
     }
 
+    /// Returns an iterator for the (non-erased) items in the [`SortedDeque`],
+    /// in FIFO (and thus sorted) order.
     pub fn iter(&self) -> impl Iterator<Item = &Container::Item> {
         self.items
             .iter()
