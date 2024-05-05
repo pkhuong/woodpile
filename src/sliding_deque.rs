@@ -332,6 +332,53 @@ fn test_vec() {
 }
 
 #[test]
+fn test_vec_pop_back() {
+    let mut deque = SlidingDeque::<Vec<u32>>::new();
+
+    deque.push_back(0);
+    deque.push_back(1);
+
+    assert_eq!(deque.pop_back(), Some(1));
+    assert_eq!(deque.pop_back(), Some(0));
+    assert_eq!(deque.pop_back(), None);
+}
+
+#[test]
+fn test_vec_pop_advance() {
+    let mut deque = SlidingDeque::<Vec<u32>>::new();
+
+    deque.push_back(0);
+    deque.push_back(1);
+
+    assert_eq!(deque.pop_back(), Some(1));
+    assert_eq!(deque.advance(2), 1);
+    assert_eq!(deque.pop_back(), None);
+}
+
+#[test]
+fn test_vec_advance() {
+    let mut deque = SlidingDeque::<Vec<u32>>::new();
+
+    deque.push_back(0);
+    deque.push_back(1);
+
+    deque.advance(1);
+    assert_eq!(deque.pop_back(), Some(1));
+    assert_eq!(deque.pop_back(), None);
+}
+
+#[test]
+fn test_vec_advance2() {
+    let mut deque = SlidingDeque::<Vec<u32>>::new();
+
+    deque.push_back(0);
+    deque.push_back(1);
+
+    deque.advance(2);
+    assert_eq!(deque.pop_back(), None);
+}
+
+#[test]
 fn test_smallvec() {
     let mut deque = SlidingDeque::<SmallVec<[u8; 8]>>::new();
 
