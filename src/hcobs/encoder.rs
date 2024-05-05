@@ -242,6 +242,8 @@ fn encode_with_test_params(bytes: &[u8]) -> Vec<u8> {
         assert_eq!(&iovec.flatten().expect("no backpatch left"), &ret);
     }
 
+    assert_eq!(super::find_stuff_sequence(&ret), None);
+
     ret
 }
 
