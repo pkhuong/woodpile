@@ -21,10 +21,10 @@ pub use anchor::Anchor;
 /// Whenever we allocate from a [`ByteArena`], the allocation is associated
 /// with an `Anchor`.  Each anchor has a sticky optional reference to the
 /// backing chunk; when all anchors (and the allocation cache) are dropped,
-/// the backing memory automatically released.  The [`Arc`] reference is
-/// heavy-weight, so each anchor may be responsible for multiple allocations.
+/// the backing memory automatically released.  The [`std::sync::Arc`] in
+/// `Anchor` is heavy-weight, so each may stand for multiple allocations.
 ///
-/// The relationship between [`Anchors`] and [`ByteArena`] allocations isn't
+/// The relationship between `Anchor`s and [`ByteArena`] allocations isn't
 /// easy to express in the Rust typesystem, so we instead expose an unsafe
 /// interface; this type is only expected to be used via [`crate::OwningIovec`].
 #[derive(Debug, Default)]

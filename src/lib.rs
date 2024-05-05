@@ -3,9 +3,8 @@ pub mod cows;
 pub mod epoch_writer;
 pub mod hcobs;
 mod owning_iovec;
-pub mod ppp_lock;
-pub mod sliding_deque;
-pub mod sorted_deque;
+mod sliding_deque;
+mod sorted_deque;
 mod vouched_time;
 
 use std::io::Result;
