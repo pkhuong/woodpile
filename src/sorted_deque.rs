@@ -1,3 +1,18 @@
+//! The `sorted_deque` module exposes the [`SortedDeque`]
+//! container, as well as associated traits.
+//!
+//! A [`SortedDeque`] wraps a [`SlidingDeque`] to implement a special
+//! case of sorted containers:
+//!
+//! - values may only be inserted at the end (i.e., in strictly ascending order)
+//! - values may be searched (with binary search)
+//! = values may be marked as logically deleted, but are only physically deleted
+//!   when they're the first or last value in FIFO (sorted) order.
+//!
+//! Insertion is amortied constant time, lookups are logarithmic time (although
+//! we must take into account items that are logically but not yet physically
+//! deleted), and deletion takes as much time as a lookup plus some amortised
+//! constant-time overhead.
 use std::cmp::Ordering;
 
 use crate::sliding_deque::PushTruncateContainer;
@@ -25,7 +40,7 @@ pub trait SortedDequeMarker<T> {
     fn is_erased(&self, item: &T) -> bool;
 }
 
-/// But we can also derive the simple case from any type that
+/// In the simple case [`SortedDeque`] supports any type that
 /// implements [`Ord`] and the new `mark_erased` / `is_erased`
 /// operations: we'll just compare the whole object.
 pub trait SortedDequeItem: Ord {
