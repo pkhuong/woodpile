@@ -172,7 +172,7 @@ impl ByteArena {
     /// The return value must not outlast the `ByteArena`.  We lie with `'static`
     /// because `ByteArena` is used in the self-referential `OwningIovec` class.
     #[inline(always)]
-    pub(crate) unsafe fn contains(&self, slice: &[u8]) -> Option<&'static [u8]> {
+    pub(super) unsafe fn contains(&self, slice: &[u8]) -> Option<&'static [u8]> {
         let range = &self.cache.as_ref()?.range();
         let endpoints = slice.as_ptr_range();
 
@@ -193,7 +193,7 @@ impl ByteArena {
     /// The return value must not outlast the `ByteArena`.  We lie with `'static`
     /// because `ByteArena` is used in the self-referential `OwningIovec` class.
     #[inline(always)]
-    pub(crate) unsafe fn try_join(&self, left: &[u8], right: &[u8]) -> Option<&'static [u8]> {
+    pub(super) unsafe fn try_join(&self, left: &[u8], right: &[u8]) -> Option<&'static [u8]> {
         if let (Some(left), Some(right)) = unsafe { (self.contains(left), self.contains(right)) } {
             if left.as_ptr_range().end == right.as_ptr_range().start {
                 let start = left.as_ptr_range().start;
@@ -230,7 +230,7 @@ impl ByteArena {
     /// anchor.  We lie with `'static` because `OwningIovec` just has
     /// to get it right.
     #[inline(always)]
-    pub(crate) unsafe fn alloc(
+    pub(super) unsafe fn alloc(
         &mut self,
         len: NonZeroUsize,
         old_anchor: Option<&mut Anchor>,
@@ -260,7 +260,7 @@ impl ByteArena {
     /// The return value must not outlast the `old_anchor` or the new
     /// anchor.  We lie with `'static` because `OwningIovec` just has
     /// to get it right.
-    pub(crate) unsafe fn copy(
+    pub(super) unsafe fn copy(
         &mut self,
         src: &[u8],
         old_anchor: Option<&mut Anchor>,
