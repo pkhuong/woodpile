@@ -3,7 +3,7 @@ use std::io::IoSlice;
 use std::num::NonZeroUsize;
 
 use super::byte_arena::Anchor;
-use crate::sliding_deque::SlidingDeque;
+use crate::sliding_deque::SlidingVec;
 
 /// The `GlobalDeque` is a `SlidingDeque` of `IoSlice` that tracks the
 /// current logical (monotonically icnreasing) position and size, and
@@ -14,7 +14,7 @@ use crate::sliding_deque::SlidingDeque;
 /// on the surrounding [`OwningIovec`] to avoid dangling slices.
 #[derive(Debug, Default, Clone)]
 pub struct GlobalDeque<'this> {
-    slices: SlidingDeque<Vec<IoSlice<'this>>>,
+    slices: SlidingVec<IoSlice<'this>>,
     anchors: VecDeque<Anchor>, // Each anchor is responsible for a contiguous number (> 0) of slices.
     logical_size: u64,
     consumed_size: u64,

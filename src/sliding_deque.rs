@@ -60,6 +60,7 @@ pub type SlidingVec<T> = SlidingDeque<Vec<T>>;
 
 /// A [`SlidingVec`] where the backing storage is a [`SmallVec<SliceType>`],
 /// e.g., `SlidingSmallVec<[u32; 8]>`.
+#[allow(dead_code)]
 pub type SlidingSmallVec<SliceType> = SlidingDeque<SmallVec<SliceType>>;
 
 impl<Container: PushTruncateContainer + Clone + Default> SlidingDeque<Container>
