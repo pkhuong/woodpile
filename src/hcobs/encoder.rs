@@ -12,7 +12,7 @@ use crate::owning_iovec::OwningIovecBackref;
 use crate::OwningIovec;
 
 #[derive(Debug)]
-pub(crate) struct EncoderState {
+pub struct EncoderState {
     max_chunk_size: NonZeroUsize,
     current_chunk_size: usize,
     maybe_mid_stuff: bool,

@@ -1,10 +1,12 @@
 //! This module implements the hybrid consistent-overhead byte/word
 //! stuffing scheme of <https://pvk.ca/Blog/2021/01/11/stuff-your-logs/>,
 //! with an incremental interface.
+mod encoder;
+
 use std::num::NonZeroUsize;
 
-use crate::hcobs_encoder::EncoderState;
 use crate::OwningIovec;
+use encoder::EncoderState;
 
 pub const RADIX: usize = 0xfd;
 #[allow(clippy::assertions_on_constants)]
@@ -12,18 +14,18 @@ const _: () = assert!(RADIX == 253);
 pub const STUFF_SEQUENCE: [u8; 2] = [0xfe, 0xfd];
 
 #[derive(Clone, Copy)]
-pub(crate) struct Parameters {
-    pub max_initial_size: NonZeroUsize,
-    pub max_subsequent_size: NonZeroUsize,
+struct Parameters {
+    max_initial_size: NonZeroUsize,
+    max_subsequent_size: NonZeroUsize,
 }
 
-pub(crate) const PROD_PARAMS: Parameters = Parameters {
+const PROD_PARAMS: Parameters = Parameters {
     max_initial_size: unsafe { NonZeroUsize::new_unchecked(RADIX - 1) },
     max_subsequent_size: unsafe { NonZeroUsize::new_unchecked((RADIX * RADIX) - 1) },
 };
 
 #[cfg(test)]
-pub(crate) const TEST_PARAMS: Parameters = Parameters {
+const TEST_PARAMS: Parameters = Parameters {
     max_initial_size: unsafe { NonZeroUsize::new_unchecked(3) },
     max_subsequent_size: unsafe { NonZeroUsize::new_unchecked(5) },
 };
