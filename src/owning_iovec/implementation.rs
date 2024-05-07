@@ -43,7 +43,7 @@ impl OwningIovecBackref {
 /// An [`OwningIovec`] is a [`Vec<IoSlice<>>`] that may optionally own
 /// some of it slices' pointees.  Some of the owned pointees may be
 /// backpatched after the fact, and it's possible to peek at and consume
-/// the first `IoSlice`s that aren't pending backpatching.
+/// the first `IoSlice`s that aren't waiting for a backpatch.
 ///
 /// Internally, owned slices are allocated from an internal arena that
 /// lives at least as long as the [`OwningIovec`] itself.  It's safe
@@ -52,6 +52,9 @@ impl OwningIovecBackref {
 /// `&'this self` to live at least as long the [`IoSlice`]s.
 #[derive(Debug, Default, Clone)]
 pub struct OwningIovec<'this> {
+    // The `GlobalDeque` manages the mapping between slices and
+    // Anchors, but is oblivious to backreferences.  Always bound
+    // check *that* before accessing `slices`.
     slices: GlobalDeque<'this>,
 
     // We allocate from `arena`, but only to stick values in `iovs`,
@@ -59,14 +62,6 @@ pub struct OwningIovec<'this> {
     // `OwningIovec`.
     arena: ByteArena,
     backrefs: SortedDeque<SmallVec<[Backref; 4]>>, // Pending backrefs
-}
-
-impl<'this> Drop for OwningIovec<'this> {
-    fn drop(&mut self) {
-        // Clear the slices *before* the arena is destroyed: we don't
-        // want dangling pointers.
-        self.slices = Default::default();
-    }
 }
 
 /// Always copy when the source is at most this long.
@@ -185,6 +180,8 @@ impl<'this> OwningIovec<'this> {
     }
 
     /// Returns the number of slices in the [`OwningIovec`].
+    ///
+    /// This includes slices that are still waiting for a backpatch.
     #[inline(always)]
     pub fn len(&self) -> usize {
         self.slices.num_slices()
@@ -197,6 +194,8 @@ impl<'this> OwningIovec<'this> {
     }
 
     /// Returns the total number of bytes in `self.iovs`.
+    ///
+    /// This includes slices that are still waiting for a backpatch.
     #[inline(always)]
     pub fn total_size(&self) -> usize {
         self.slices.total_size()
@@ -209,15 +208,14 @@ impl<'this> OwningIovec<'this> {
     ///
     /// This method takes constant amortised time wrt `slice.len()`.
     pub fn push(&mut self, slice: &'this [u8]) {
-        if slice.is_empty() {
-            return;
-        }
-
         let small = slice.len() <= SMALL_COPY;
         let appendable = (slice.len() <= MAX_OPPORTUNISTIC_COPY)
-            & (!self.is_empty())  // Can't extend an empty iovec
-            & (self.slices.last_slice().map(|slice| self.arena.is_last(&slice)) == Some(true))
-            & (self.arena.remaining() >= slice.len());
+            & (self.arena.remaining() >= slice.len())
+            & (self
+                .slices
+                .last_slice()
+                .map(|slice| self.arena.is_last(&slice))
+                == Some(true));
 
         if small | appendable {
             self.push_copy(slice);

@@ -6,9 +6,15 @@ use super::byte_arena::Anchor;
 use crate::sliding_deque::SlidingVec;
 
 /// The `GlobalDeque` is a `SlidingDeque` of `IoSlice` that tracks the
-/// current logical (monotonically icnreasing) position and size, and
+/// current logical (monotonically increasing) position and size, and
 /// maps between that and the physical locations, taking into account
 /// the `IoSlice`s and bytes consumed.
+///
+/// Each slice is also backed by one [`Anchor`] in `anchors`.  Slices
+/// (and anchors) may be appended to the end of the [`GlobalDeque`],
+/// merged at the end, or consumed from the front.  The caller ([`OwningIovec`])
+/// is responsible for capping consumption if it holds backreferences
+/// into `slices`.
 ///
 /// The usage of the `this` lifetime can be unsound; we rely on constraints
 /// on the surrounding [`OwningIovec`] to avoid dangling slices.
@@ -40,6 +46,10 @@ impl<'this> GlobalDeque<'this> {
         }
     }
 
+    /// Pushes a new slice at the end of the deque.  If we have an anchor
+    /// it's pushed to the back of the anchor deque; otherwise, we assume
+    /// the current last anchor has been mutated in place to take the
+    /// new slice into account.
     pub fn push(&mut self, entry: (IoSlice<'this>, Option<Anchor>)) {
         let (slice, anchor) = entry;
         self.logical_size += slice.len() as u64;
@@ -51,6 +61,8 @@ impl<'this> GlobalDeque<'this> {
         }
     }
 
+    /// Pushes a borrowed slice (guaranteed to outlive the `GlobalDeque`)
+    /// at the end of the deque.
     pub fn push_borrowed(&mut self, slice: IoSlice<'this>) {
         self.logical_size += slice.len() as u64;
         self.slices.push_back(slice);
@@ -102,6 +114,7 @@ impl<'this> GlobalDeque<'this> {
         &self.slices[..take]
     }
 
+    /// Drops the first `count` slices in the deque.
     #[inline(never)]
     pub fn consume(&mut self, count: usize) -> usize {
         let count = count.min(self.slices.len());
@@ -132,9 +145,20 @@ impl<'this> GlobalDeque<'this> {
             }
         }
 
+        // Drop any zero-count anchor at the front.
+        while let Some(anchor) = self.anchors.front() {
+            if anchor.count() > 0 {
+                break;
+            }
+
+            self.anchors.pop_front();
+        }
+
         count
     }
 
+    /// Drops the first `count` bytes in the deque.  Any partially consumed
+    /// final slice is advanced in place.
     #[inline(never)]
     pub fn consume_by_bytes(&mut self, count: usize) -> usize {
         let mut consumed = 0;
@@ -152,6 +176,7 @@ impl<'this> GlobalDeque<'this> {
                 std::slice::from_raw_parts(ptr.add(num_to_consume), len - num_to_consume)
             };
             if new_slice.is_empty() {
+                // XXX: should we consume the full sized slices in bulk?
                 self.consume(1);
             } else {
                 *slice = IoSlice::new(new_slice);
@@ -165,17 +190,20 @@ impl<'this> GlobalDeque<'this> {
         consumed
     }
 
+    /// Returns the total number of slices.
     #[inline(always)]
     pub fn num_slices(&self) -> usize {
         self.slices.len()
     }
 
-    // Returns the total number of bytes in the slices.
+    /// Returns the total number of bytes in the slices.
     #[inline(always)]
     pub fn total_size(&self) -> usize {
         (self.logical_size - self.consumed_size) as usize
     }
 
+    /// Attempts to collapse the last two slices in the deque into a
+    /// single slice, if it's safe to do so.
     pub fn maybe_collapse_last_pair(
         &mut self,
         collapse: impl FnOnce(IoSlice<'this>, IoSlice<'this>) -> Option<IoSlice<'this>>,

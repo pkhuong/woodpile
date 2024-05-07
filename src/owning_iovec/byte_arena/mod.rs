@@ -24,6 +24,7 @@ pub struct ByteArena {
 
 impl Clone for ByteArena {
     fn clone(&self) -> ByteArena {
+        // Can't clone the `AllocCache`.
         Default::default()
     }
 }
@@ -169,10 +170,10 @@ impl ByteArena {
     ///
     /// # Safety
     ///
-    /// The return value must not outlast the `ByteArena`.  We lie with `'static`
-    /// because `ByteArena` is used in the self-referential `OwningIovec` class.
+    /// The return value's lifetime is a lie.  This method should only be used in
+    /// `try_join`.
     #[inline(always)]
-    pub(super) unsafe fn contains(&self, slice: &[u8]) -> Option<&'static [u8]> {
+    unsafe fn contains(&self, slice: &[u8]) -> Option<&'static [u8]> {
         let range = &self.cache.as_ref()?.range();
         let endpoints = slice.as_ptr_range();
 
@@ -190,8 +191,8 @@ impl ByteArena {
     ///
     /// # Safety
     ///
-    /// The return value must not outlast the `ByteArena`.  We lie with `'static`
-    /// because `ByteArena` is used in the self-referential `OwningIovec` class.
+    /// The return value must not outlast the slices' anchor(s).  The
+    /// static lifetime is a lie.
     #[inline(always)]
     pub(super) unsafe fn try_join(&self, left: &[u8], right: &[u8]) -> Option<&'static [u8]> {
         if let (Some(left), Some(right)) = unsafe { (self.contains(left), self.contains(right)) } {

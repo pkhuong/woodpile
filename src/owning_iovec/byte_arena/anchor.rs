@@ -1,3 +1,12 @@
+//! Allocations in a `ByteArena` consist of `u8` slices kept alive by an [`Anchor`].
+//! Each anchor contains an [`Arc<Chunk>`], which keeps a backing allocation
+//! alive.  One [`Arc`] per allocation would be wasteful, so each [`Anchor`]
+//! may be responsible for any number of slices.
+//!
+//! The relationship between slices and [`Anchor`]s is hard to express
+//! in Rust, so we instead expose an unsafe *internal* interface with
+//! `&'static` slices, and wrap in the simpler `OwningIovec`.
+
 use std::mem::MaybeUninit;
 use std::num::NonZeroUsize;
 use std::ptr::NonNull;
@@ -29,15 +38,19 @@ impl Drop for Chunk {
     }
 }
 
-/// Each [`Anchor`] keeps a chunk of backing memory alive on behalf of
-/// a number of allocations.
+/// Each [`Anchor`] keeps a chunk of backing memory alive on behalf of a
+/// number of allocations.
 #[derive(Clone, Debug, Default)]
 pub struct Anchor {
-    count: usize,
-    chunk: Option<Arc<Chunk>>,
+    count: usize,              // Number of slices that are backed by this [`Anchor`]
+    chunk: Option<Arc<Chunk>>, // Sticky once populated
 }
 
 impl Anchor {
+    /// Constructs a fresh anchor with a strictly positive use count.  The
+    /// positive `count` isn't a requirement, and the value *will* hit zero
+    /// during normal operations, but it's usually a programming mistake to
+    /// initialise an [`Anchor`] with a zero (ref) count.
     #[inline(always)]
     fn new(count: NonZeroUsize, chunk: Arc<Chunk>) -> Self {
         Anchor {
@@ -46,6 +59,13 @@ impl Anchor {
         }
     }
 
+    /// Constructs a fresh anchor with no backing chunk.
+    ///
+    /// An anchor may start out with no backing chunk when it's used to
+    /// represent the ownership of borrowed slices.  It's safe to attach a
+    /// chunk to an `Anchor` after the fact: in the worst case, this only
+    /// extends the chunk's lifetime.  That's why it's also safe to increment
+    /// `count` when a borrowed slice is attached to an [`Anchor`].
     #[inline(always)]
     pub fn new_with_count(count: NonZeroUsize) -> Self {
         Anchor {
@@ -64,6 +84,11 @@ impl Anchor {
         self.count += 1
     }
 
+    /// Decrements the internal (reference) count by up to `decrement`:
+    /// the `count` value stops at 0.
+    ///
+    /// Returns the extra value in `decrement` that could not be
+    /// subtracted from `count`.
     #[inline(always)]
     pub fn decrement_count(&mut self, decrement: usize) -> usize {
         let can_take = self.count.min(decrement);
@@ -71,6 +96,8 @@ impl Anchor {
         decrement - can_take
     }
 
+    /// Determins whether this [`Anchor`] holds on to the same
+    /// [`Chunk`] as `chunk`.
     fn is_same_chunk(&self, chunk: &Arc<Chunk>) -> bool {
         match self.chunk.as_ref() {
             Some(this) => Arc::ptr_eq(this, chunk),

@@ -7,15 +7,17 @@ use std::sync::Arc;
 use super::anchor::Anchor;
 use super::anchor::Chunk;
 
-/// An [`AllocCache`] is a bump pointer in a range of pre-allocated [`MaybeUninit<u8>`].
+/// An [`AllocCache`] is a bump pointer in a range of pre-allocated
+/// [`MaybeUninit<u8>`].
 ///
-/// Whenever `AllocCache` returns a slice, it also ensures an [`Anchor`] is
-/// responsible for keeping the slice's backing memory alive.
+/// Whenever `AllocCache` returns a slice, it also ensures an
+/// [`Anchor`] is responsible for keeping the slice's backing memory
+/// alive.
 #[derive(Debug)]
 pub struct AllocCache {
     bump: *mut MaybeUninit<u8>,
-    range: Range<*mut MaybeUninit<u8>>,
-    backing: Arc<Chunk>, // Backing memory for `AllocCache`.
+    range: Range<*mut MaybeUninit<u8>>, // XXX: redundant with `backing`.
+    backing: Arc<Chunk>,                // Backing memory for `AllocCache`.
 }
 
 // AllocCache is thread-compatible
@@ -23,6 +25,8 @@ unsafe impl Send for AllocCache {}
 unsafe impl Sync for AllocCache {}
 
 impl AllocCache {
+    /// Returns a fresh [`AllocCAche`] that has capacity at least equal to `wanted`,
+    /// and equal to `hint` if possible.
     pub fn new(wanted: usize, hint: usize) -> AllocCache {
         let capacity = hint.max(wanted);
         assert!(capacity >= wanted);
@@ -40,11 +44,14 @@ impl AllocCache {
         }
     }
 
+    /// Returns the initial capacity allocated for the backing chunk
+    /// (i.e., the size of the backing chunk).
     #[inline(always)]
     pub fn initial_size(&self) -> usize {
         (self.range.end as usize) - (self.range.start as usize)
     }
 
+    /// Returns the address range for the backing chunk.
     #[inline(always)]
     pub fn range(&self) -> Range<usize> {
         Range {
@@ -53,11 +60,14 @@ impl AllocCache {
         }
     }
 
+    /// Returns the address of the next allocationn (one past the
+    /// end of the most recent allocation).
     #[inline(always)]
     pub fn next_alloc_address(&self) -> usize {
         self.bump as usize
     }
 
+    /// Returns the amount of space remaining in the backing chunk.
     #[inline(always)]
     pub fn remaining(&self) -> usize {
         assert!(self.range.start <= self.bump);
