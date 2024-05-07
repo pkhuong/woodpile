@@ -306,7 +306,7 @@ impl<'this> OwningIovec<'this> {
             begin: self.slices.last_slice().unwrap().len() - pattern_size,
             len: NonZeroUsize::try_from(pattern_size).unwrap(), // We checked for emptiness above
         };
-        self.backrefs.push_back((logical_index, Some(info)));
+        self.backrefs.push_back_or_panic((logical_index, Some(info)));
         OwningIovecBackref(Some((logical_index, info)))
     }
 

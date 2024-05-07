@@ -107,7 +107,7 @@ where
     <Container as PushTruncateContainer>::Item: Copy,
     Marker: SortedDequeMarker<<Container as PushTruncateContainer>::Item> + Clone,
 {
-    /// Values in the `items` deque may be erased, except for the
+    /// Values in the `items` deque may be logically eraseed, except for the
     /// first/last: we always clean up from both ends.
     items: SlidingDeque<Container>,
     marker: Marker,
@@ -144,7 +144,7 @@ where
     /// last element, if any.
     ///
     /// No-ops if `item` is already erased.
-    pub fn push_back(&mut self, item: Container::Item) {
+    pub fn push_back_or_panic(&mut self, item: Container::Item) {
         if self.marker.is_erased(&item) {
             return;
         }
