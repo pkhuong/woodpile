@@ -1,9 +1,12 @@
 use std::io::IoSlice;
+use std::io::Read;
 use std::num::NonZeroUsize;
 
 use smallvec::SmallVec;
 
-pub use super::byte_arena::ByteArena;
+use super::byte_arena::Anchor;
+use super::byte_arena::AnchoredSlice;
+use super::byte_arena::ByteArena;
 use super::global_deque::GlobalDeque;
 use crate::sorted_deque::SortedDeque;
 
@@ -104,12 +107,26 @@ impl<'this> OwningIovec<'this> {
         self.arena.ensure_capacity(len);
     }
 
+    pub fn arena_read_n(
+        &mut self,
+        src: impl Read,
+        count: usize,
+        max_attempts: NonZeroUsize,
+    ) -> std::io::Result<AnchoredSlice> {
+        self.arena.read_n(src, count, max_attempts)
+    }
+
     /// Returns the underlying arena.
     pub fn take_arena(&mut self) -> ByteArena {
         let mut ret = ByteArena::new();
 
         std::mem::swap(&mut ret, &mut self.arena);
         ret
+    }
+
+    pub fn swap_arena(&mut self, mut arena: ByteArena) -> ByteArena {
+        std::mem::swap(&mut arena, &mut self.arena);
+        arena
     }
 
     /// Returns a prefix of the owned slices such that none of the
@@ -263,6 +280,10 @@ impl<'this> OwningIovec<'this> {
         }
     }
 
+    pub fn push_anchor(&mut self, anchor: Anchor) {
+        self.slices.push_anchor(anchor);
+    }
+
     /// Returns the contents of this iovec as a single [`Vec<u8>`].
     ///
     /// Returns the stable contents as an error if there is any backreference in flight.
@@ -306,7 +327,8 @@ impl<'this> OwningIovec<'this> {
             begin: self.slices.last_slice().unwrap().len() - pattern_size,
             len: NonZeroUsize::try_from(pattern_size).unwrap(), // We checked for emptiness above
         };
-        self.backrefs.push_back_or_panic((logical_index, Some(info)));
+        self.backrefs
+            .push_back_or_panic((logical_index, Some(info)));
         OwningIovecBackref(Some((logical_index, info)))
     }
 
@@ -405,6 +427,7 @@ fn test_happy_optimize() {
     iovs.push_copy(b"456");
     iovs.push(b"7");
     iovs.push_borrowed(b"aaa");
+    iovs.push_anchor(Default::default());
 
     // We expect 3 ioslices:
     // 1 for the initial `push_borrowed`,
@@ -453,7 +476,9 @@ fn test_no_optimize_gap() {
     iovs.push_borrowed(b"aaa");
 
     // Force a realloc, make sure this doesn't do weird stuff.
-    iovs.take_arena().ensure_capacity(10000);
+    let mut arena = iovs.take_arena();
+    arena.ensure_capacity(10000);
+    iovs.swap_arena(arena);
 
     assert_eq!(iovs.len(), 4);
     assert_eq!(iovs.total_size(), 12);

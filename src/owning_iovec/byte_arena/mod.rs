@@ -10,6 +10,7 @@
 mod alloc_cache;
 mod anchor;
 
+use std::io::Read;
 use std::mem::MaybeUninit;
 use std::num::NonZeroUsize;
 
@@ -20,6 +21,12 @@ pub use anchor::Anchor;
 #[derive(Debug, Default)]
 pub struct ByteArena {
     cache: Option<AllocCache>,
+}
+
+/// An [`AnchoredSlice`] is a slice backed by an internal anchor.
+pub struct AnchoredSlice {
+    slice: &'static [u8], // actually lives as long as `anchor`.
+    anchor: Anchor,
 }
 
 impl Clone for ByteArena {
@@ -281,6 +288,92 @@ impl ByteArena {
             unsafe { std::slice::from_raw_parts_mut(dst_ptr, len) },
             anchor,
         )
+    }
+}
+
+impl AnchoredSlice {
+    pub fn slice(&self) -> &[u8] {
+        self.slice
+    }
+
+    pub unsafe fn components(self) -> (&'static [u8], Anchor) {
+        (self.slice, self.anchor)
+    }
+}
+
+impl ByteArena {
+    pub fn read_n(
+        &mut self,
+        src: impl Read,
+        count: usize,
+        max_attempts: NonZeroUsize,
+    ) -> std::io::Result<AnchoredSlice> {
+        const EMPTY: [u8; 0] = [];
+        if count == 0 {
+            return Ok(AnchoredSlice {
+                slice: &EMPTY,
+                anchor: Default::default(),
+            });
+        }
+
+        let (raw_slice, anchor) = unsafe { self.alloc(NonZeroUsize::new(count).unwrap(), None) };
+        assert_eq!(raw_slice.len(), count);
+        let slice: &'static mut [u8] =
+            unsafe { std::slice::from_raw_parts_mut(raw_slice.as_mut_ptr() as *mut u8, count) };
+
+        match self.read_n_impl(src, slice, max_attempts) {
+            Ok(slice) => {
+                self.cache
+                    .as_mut()
+                    .unwrap()
+                    .release_or_die(&raw_slice[slice.len()..]);
+                Ok(AnchoredSlice {
+                    slice,
+                    anchor: anchor.unwrap_or_default(),
+                })
+            }
+            Err(e) => {
+                // We just got an allocation, the cache isn't empty.
+                self.cache.as_mut().unwrap().release_or_die(raw_slice);
+                Err(e)
+            }
+        }
+    }
+
+    fn read_n_impl(
+        &mut self,
+        mut src: impl Read,
+        slice: &'static mut [u8],
+        max_attempts: NonZeroUsize,
+    ) -> std::io::Result<&'static [u8]> {
+        slice.fill(0); // XXX: unfortunately...
+        let mut got = 0usize;
+
+        for _ in 0..max_attempts.get() {
+            let ret = src.read(&mut slice[got..]);
+
+            match ret {
+                Ok(count) => {
+                    got += count;
+                    if count == 0 {
+                        break; // EOF
+                    }
+                }
+                Err(e) => {
+                    if got == 0 {
+                        return Err(e);
+                    } else if e.kind() != std::io::ErrorKind::Interrupted {
+                        break;
+                    }
+                }
+            }
+
+            if got == slice.len() {
+                break;
+            }
+        }
+
+        Ok(&slice[..got])
     }
 }
 

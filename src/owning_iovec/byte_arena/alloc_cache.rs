@@ -109,4 +109,19 @@ impl AllocCache {
         let anchor = Anchor::merge_ref_or_create(old_anchor, &self.backing);
         (ret, anchor)
     }
+
+    /// Marks the bytes in `remainder` as available for new allocations.
+    ///
+    /// This `remainder` slice must come from allocation cache and stop
+    /// right at the current bump pointer.
+    pub fn release_or_die(&mut self, remainder: &[MaybeUninit<u8>]) {
+        let addr = remainder.as_ptr() as usize;
+        let end_addr = addr + remainder.len();
+
+        assert!(self.range().contains(&addr));
+        assert_eq!(self.bump as usize, end_addr);
+
+        // SAFETY: `remainder` is fully in the backing chunk.
+        self.bump = unsafe { self.bump.sub(remainder.len()) };
+    }
 }

@@ -74,6 +74,11 @@ impl<'this> GlobalDeque<'this> {
         self.anchors.back_mut().unwrap().increment_count();
     }
 
+    pub fn push_anchor(&mut self, mut anchor: Anchor) {
+        anchor.decrement_count(anchor.count());
+        self.anchors.push_back(anchor);
+    }
+
     #[inline(always)]
     pub fn last_anchor(&mut self) -> Option<&mut Anchor> {
         self.anchors.back_mut()
@@ -153,6 +158,9 @@ impl<'this> GlobalDeque<'this> {
 
             self.anchors.pop_front();
         }
+
+        // slices js empty iff anchors are as well.
+        assert!(self.slices.is_empty() == self.anchors.is_empty());
 
         count
     }
