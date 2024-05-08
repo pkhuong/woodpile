@@ -307,7 +307,7 @@ fn test_happy_path() {
     assert_eq!(deque.find(&item), None);
     assert_eq!(deque.iter().copied().collect::<Vec<_>>(), []);
 
-    deque.push_back(item);
+    deque.push_back_or_panic(item);
     assert!(!deque.is_empty());
     assert_eq!(deque.iter().copied().collect::<Vec<_>>(), [item]);
 
@@ -361,10 +361,10 @@ fn test_remove_middle() {
     ];
     assert_eq!(deque.find(&items[0]), None);
 
-    deque.push_back(items[0]);
-    deque.push_back(items[1]);
-    deque.push_back(items[2]);
-    deque.push_back(items[3]);
+    deque.push_back_or_panic(items[0]);
+    deque.push_back_or_panic(items[1]);
+    deque.push_back_or_panic(items[2]);
+    deque.push_back_or_panic(items[3]);
 
     assert!(!deque.is_empty());
 
@@ -412,9 +412,9 @@ fn test_remove_middle_then_pop() {
     ];
     assert_eq!(deque.find(&items[0]), None);
 
-    deque.push_back(items[0]);
-    deque.push_back(items[1]);
-    deque.push_back(items[2]);
+    deque.push_back_or_panic(items[0]);
+    deque.push_back_or_panic(items[1]);
+    deque.push_back_or_panic(items[2]);
 
     assert!(!deque.is_empty());
 
@@ -446,10 +446,10 @@ fn test_key_val() {
     type Entry = (u32, Option<()>);
     let mut deque: SortedDeque<smallvec::SmallVec<[Entry; 4]>> = Default::default();
 
-    deque.push_back((1, Some(())));
-    deque.push_back((2, Some(())));
-    deque.push_back((1, None));
-    deque.push_back((3, Some(())));
+    deque.push_back_or_panic((1, Some(())));
+    deque.push_back_or_panic((2, Some(())));
+    deque.push_back_or_panic((1, None));
+    deque.push_back_or_panic((3, Some(())));
 
     assert_eq!(deque.find(&0), None);
     assert_eq!(deque.remove(&0), None);
