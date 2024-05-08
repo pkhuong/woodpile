@@ -4,6 +4,7 @@
 mod decoder;
 mod encoder;
 
+use std::io::Read;
 use std::io::Result;
 use std::num::NonZeroUsize;
 
@@ -102,6 +103,22 @@ impl<'this> Encoder<'this> {
         self.state = state.encode_copy(&mut self.iovec, PROD_PARAMS, data);
     }
 
+    pub fn encode_read(
+        &mut self,
+        reader: impl Read,
+        count: usize,
+        attempts: NonZeroUsize,
+    ) -> Result<usize> {
+        let anchored_slice = self.iovec.arena_read_n(reader, count, attempts)?;
+        assert!(anchored_slice.slice().len() <= count);
+        let (slice, anchor) = unsafe { anchored_slice.components() };
+
+        self.encode(slice);
+        self.iovec.push_anchor(anchor);
+
+        Ok(slice.len())
+    }
+
     /// Flushes any pending encoding bytes and returns the underlying
     /// [`OwningIovec`].
     #[must_use]
@@ -164,10 +181,57 @@ impl<'this> Decoder<'this> {
         Ok(())
     }
 
+    pub fn decode_read(
+        &mut self,
+        reader: impl Read,
+        count: usize,
+        attempts: NonZeroUsize,
+    ) -> Result<usize> {
+        let anchored_slice = self.iovec.arena_read_n(reader, count, attempts)?;
+        assert!(anchored_slice.slice().len() <= count);
+        let (slice, anchor) = unsafe { anchored_slice.components() };
+
+        let ret = self.decode(slice);
+        self.iovec.push_anchor(anchor);
+
+        ret.and(Ok(slice.len()))
+    }
+
     /// Returns the underlying `OwningIovec`, if the input is complete.
     pub fn finish(self) -> Result<OwningIovec<'this>> {
         self.state.terminate()?;
         Ok(self.iovec)
+    }
+}
+
+#[cfg(test)]
+struct BadReader {
+    count: usize, // first invocation is successful.
+}
+
+#[cfg(test)]
+impl Read for BadReader {
+    fn read(&mut self, dst: &mut [u8]) -> Result<usize> {
+        self.count += 1;
+        match self.count {
+            1 => {
+                let mut reader = &b"7"[..];
+                reader.read(dst)
+            }
+            2 => Err(std::io::Error::new(
+                std::io::ErrorKind::Interrupted,
+                "interrupted",
+            )),
+            3 => {
+                let mut reader = &b"89"[..];
+                reader.read(dst)
+            }
+            5 => {
+                let mut reader = &b""[..];
+                reader.read(dst)
+            }
+            _ => Err(std::io::Error::other("bad read")),
+        }
     }
 }
 
@@ -179,9 +243,43 @@ fn smoke_test() {
     encoder.iovec().ensure_arena_capacity(10);
     encoder.encode(b"123");
     encoder.encode_copy(b"456");
+    assert!(encoder
+        .encode_read(BadReader { count: 10 }, 3, NonZeroUsize::new(1).unwrap())
+        .is_err()); // Bad read should no-op
+    assert_eq!(
+        encoder
+            .encode_read(BadReader { count: 10 }, 0, NonZeroUsize::new(1).unwrap())
+            .unwrap(),
+        0
+    ); // 0-sized reads succeed
+    assert_eq!(
+        encoder
+            .encode_read(BadReader { count: 4 }, 3, NonZeroUsize::new(1).unwrap())
+            .unwrap(),
+        0
+    ); // EOF read succeed
+    assert!(encoder
+        .encode_read(BadReader { count: 1 }, 3, NonZeroUsize::new(1).unwrap())
+        .is_err()); // EINTR fails
+    assert_eq!(
+        encoder
+            .encode_read(BadReader { count: 0 }, 4, NonZeroUsize::new(5).unwrap())
+            .expect("read must succeed"),
+        3
+    ); // handle short reads
+
+    assert_eq!(
+        encoder
+            .encode_read(BadReader { count: 0 }, 3, NonZeroUsize::new(5).unwrap())
+            .expect("read must succeed"),
+        3
+    ); // exact reads also work
 
     let iovec = encoder.finish();
-    assert_eq!(iovec.flatten().expect("no backpatch left"), b"\x06123456");
+    assert_eq!(
+        iovec.flatten().expect("no backpatch left"),
+        b"\x0c123456789789"
+    );
 
     // decode
     {
@@ -193,12 +291,15 @@ fn smoke_test() {
         // Can peek
         assert_eq!(
             decoder.iovec().flatten().expect("no backpatch left"),
-            b"123456"
+            b"123456789789"
         );
 
         // Termination succeeds
         let output = decoder.finish().expect("success");
-        assert_eq!(output.flatten().expect("no backpatch left"), b"123456");
+        assert_eq!(
+            output.flatten().expect("no backpatch left"),
+            b"123456789789"
+        );
     }
 
     // decode copy
@@ -210,11 +311,42 @@ fn smoke_test() {
 
         assert_eq!(
             decoder.iovec().flatten().expect("no backpatch left"),
-            b"123456"
+            b"123456789789"
         );
 
         let output = decoder.finish().expect("success");
-        assert_eq!(output.flatten().expect("no backpatch left"), b"123456");
+        assert_eq!(
+            output.flatten().expect("no backpatch left"),
+            b"123456789789"
+        );
+    }
+
+    // decode read
+    {
+        let mut decoder: Decoder<'_> = Default::default();
+
+        // Bad read should no-op
+        assert!(decoder
+            .decode_read(BadReader { count: 10 }, 3, NonZeroUsize::new(1).unwrap())
+            .is_err());
+
+        for slice in iovec.into_iter() {
+            let slice: &[u8] = slice;
+            decoder
+                .decode_read(slice, slice.len(), NonZeroUsize::new(1).unwrap())
+                .expect("success");
+        }
+
+        assert_eq!(
+            decoder.iovec().flatten().expect("no backpatch left"),
+            b"123456789789"
+        );
+
+        let output = decoder.finish().expect("success");
+        assert_eq!(
+            output.flatten().expect("no backpatch left"),
+            b"123456789789"
+        );
     }
 }
 
