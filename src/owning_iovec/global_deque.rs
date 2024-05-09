@@ -172,9 +172,10 @@ impl<'this> GlobalDeque<'this> {
         let mut consumed = 0;
 
         while consumed < count {
-            let Some(slice) = self.slices.front_mut() else {
-                break;
-            };
+            let slice = self
+                .slices
+                .front_mut()
+                .expect("OwningIovec bound-checks upstream");
 
             let len = slice.len();
             let num_to_consume = (count - consumed).min(slice.len());
