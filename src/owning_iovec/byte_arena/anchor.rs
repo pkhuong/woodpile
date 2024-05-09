@@ -10,7 +10,11 @@
 use std::mem::MaybeUninit;
 use std::num::NonZeroUsize;
 use std::ptr::NonNull;
+use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+
+pub static NUM_LIVE_CHUNKS: AtomicUsize = AtomicUsize::new(0);
+pub static NUM_LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
 
 /// Conceptually, [`Chunk`] is a `Box<[u8]>`, but we convert to/from
 /// [`NonNull`] at construction and destruction in order to avoid
@@ -22,6 +26,10 @@ pub struct Chunk {
 
 impl Chunk {
     pub fn new(storage: Box<[MaybeUninit<u8>]>) -> Chunk {
+        use std::sync::atomic::Ordering;
+        NUM_LIVE_CHUNKS.fetch_add(1, Ordering::Relaxed);
+        NUM_LIVE_BYTES.fetch_add(storage.len(), Ordering::Relaxed);
+
         Chunk {
             storage: NonNull::from(Box::leak(storage)),
         }
@@ -34,7 +42,14 @@ unsafe impl Sync for Chunk {}
 
 impl Drop for Chunk {
     fn drop(&mut self) {
-        unsafe { std::mem::drop(Box::from_raw(self.storage.as_mut())) }
+        use std::sync::atomic::Ordering;
+
+        let storage = unsafe { Box::from_raw(self.storage.as_mut()) };
+        let capacity = storage.len();
+        std::mem::drop(storage);
+
+        NUM_LIVE_CHUNKS.fetch_sub(1, Ordering::Relaxed);
+        NUM_LIVE_BYTES.fetch_sub(capacity, Ordering::Relaxed);
     }
 }
 

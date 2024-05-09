@@ -13,6 +13,7 @@ mod anchor;
 use std::io::Read;
 use std::mem::MaybeUninit;
 use std::num::NonZeroUsize;
+use std::sync::atomic::Ordering;
 
 use alloc_cache::AllocCache;
 pub use anchor::Anchor;
@@ -67,6 +68,18 @@ impl ByteArena {
     #[inline(always)]
     pub fn new() -> ByteArena {
         Default::default()
+    }
+
+    /// Returns the current number of live (allocated, not yet freed)
+    /// backing arena chunks for all [`ByteArena`] in the process.
+    pub fn num_live_chunks() -> usize {
+        anchor::NUM_LIVE_CHUNKS.load(Ordering::Relaxed)
+    }
+
+    /// Returns the total size in bytes of live (allocated, not yet freed)
+    /// backing arena chunks for all [`ByteArena`] in the process.
+    pub fn num_live_bytes() -> usize {
+        anchor::NUM_LIVE_BYTES.load(Ordering::Relaxed)
     }
 
     /// Flushes the arena's internal allocation cache.
