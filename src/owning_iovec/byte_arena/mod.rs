@@ -352,6 +352,14 @@ impl AnchoredSlice {
         }
     }
 
+    /// Explodes the `AnchoredSlice` in a slice and an anchor.  The slice's
+    /// `static` lifetime is a lie: it really only lives as long as `Anchor`.
+    ///
+    /// # Safety
+    ///
+    /// Calling `AnchoredSlice::components` is safe in itself, but the
+    /// returned slice's lifetime is a lie.  It must never actually
+    /// outlive its `Anchor`.
     pub unsafe fn components(self) -> (&'static [u8], Anchor) {
         (self.slice, self.anchor)
     }

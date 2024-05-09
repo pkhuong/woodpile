@@ -11,6 +11,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use time::Duration;
 
+pub use owning_iovec::AnchoredSlice;
 pub use owning_iovec::ByteArena;
 pub use owning_iovec::OwningIovec;
 pub use vouched_time::VouchedTime;
