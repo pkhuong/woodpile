@@ -25,6 +25,7 @@ pub struct ByteArena {
 }
 
 /// An [`AnchoredSlice`] is a slice backed by an internal anchor.
+#[derive(Clone, Debug, Default)]
 pub struct AnchoredSlice {
     slice: &'static [u8], // actually lives as long as `anchor`.
     anchor: Anchor,
@@ -305,8 +306,50 @@ impl ByteArena {
 }
 
 impl AnchoredSlice {
+    /// Returns the anchored data.
     pub fn slice(&self) -> &[u8] {
         self.slice
+    }
+
+    /// Skips up to the first `count` bytes in the anchored data,
+    /// less if `count` is greater than the data's size.
+    ///
+    /// Returns the number of bytes actually skipped.
+    pub fn skip_prefix(&mut self, count: usize) -> usize {
+        let count = count.min(self.slice.len());
+        self.slice = &self.slice[count..];
+        count
+    }
+
+    /// Drops up to the last `count` bytes in the anchored data,
+    /// less if `count` is greater than the data's size.
+    ///
+    /// Returns the number of bytes actually skipped.
+    pub fn drop_suffix(&mut self, count: usize) -> usize {
+        let count = count.min(self.slice.len());
+        self.slice = &self.slice[..self.slice.len() - count];
+        count
+    }
+
+    /// Splits this `AnchoredSlice` in two parts: the first one has the
+    /// first `mid` bytes (or the whole slice), and the second has any
+    /// remaining data.
+    pub fn split_at(self, mid: usize) -> (AnchoredSlice, AnchoredSlice) {
+        if mid >= self.slice.len() {
+            (self, Default::default())
+        } else {
+            let (left, right) = self.slice.split_at(mid);
+            let left = AnchoredSlice {
+                slice: left,
+                anchor: self.anchor.clone(),
+            };
+            let right = AnchoredSlice {
+                slice: right,
+                anchor: self.anchor,
+            };
+
+            (left, right)
+        }
     }
 
     pub unsafe fn components(self) -> (&'static [u8], Anchor) {
@@ -439,4 +482,51 @@ fn test_size_sequence_grow() {
             assert!(hint <= max);
         }
     }
+}
+
+#[test]
+fn test_anchored_slice() {
+    let mut arena = ByteArena::new();
+    let (data, anchor) = unsafe { arena.copy(b"0123456789", None) };
+
+    let mut slice = AnchoredSlice {
+        slice: data,
+        anchor: anchor.unwrap(),
+    };
+
+    assert_eq!(slice.slice(), b"0123456789");
+
+    assert_eq!(slice.skip_prefix(1), 1);
+    assert_eq!(slice.slice(), b"123456789");
+
+    assert_eq!(slice.drop_suffix(1), 1);
+    assert_eq!(slice.slice(), b"12345678");
+
+    let (mut left, right) = slice.split_at(5);
+    assert_eq!(left.slice(), b"12345");
+    assert_eq!(right.slice(), b"678");
+
+    let mut other_left = left.clone();
+
+    // Check that skipping more than the size drops everything.
+    assert_eq!(left.skip_prefix(100), 5);
+    assert_eq!(left.slice(), b"");
+    std::mem::drop(left);
+
+    // Check that dropping more than the size drops everything.
+    assert_eq!(other_left.slice(), b"12345");
+    assert_eq!(other_left.drop_suffix(10), 5);
+    assert_eq!(other_left.slice(), b"");
+    std::mem::drop(other_left);
+
+    // Check that splitting at 0 is a no-op;
+    let (left, right) = right.split_at(0);
+    assert_eq!(left.slice(), b"");
+    std::mem::drop(left);
+    assert_eq!(right.slice(), b"678");
+
+    // Check that splitting past the end is a near no-op.
+    let (right, empty) = right.split_at(1000);
+    assert_eq!(right.slice(), b"678");
+    assert_eq!(empty.slice(), b"");
 }
