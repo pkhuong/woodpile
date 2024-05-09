@@ -8,6 +8,7 @@ use std::io::Read;
 use std::io::Result;
 use std::num::NonZeroUsize;
 
+use crate::AnchoredSlice;
 use crate::OwningIovec;
 use decoder::DecoderState;
 use encoder::EncoderState;
@@ -103,6 +104,19 @@ impl<'this> Encoder<'this> {
         self.state = state.encode_copy(&mut self.iovec, PROD_PARAMS, data);
     }
 
+    /// Appends the bytes in `data` to the bytes to encode.
+    pub fn encode_anchored(&mut self, data: AnchoredSlice) {
+        let (slice, anchor) = unsafe { data.components() };
+
+        self.encode(slice);
+        self.iovec.push_anchor(anchor);
+    }
+
+    /// Reads up to `count` bytes from `reader in up to `attempts`
+    /// calls to `reader.read()`, and appends the resulting data
+    /// to the bytes to encde.
+    ///
+    /// Returns the number of bytes read.
     pub fn encode_read(
         &mut self,
         reader: impl Read,
@@ -111,12 +125,10 @@ impl<'this> Encoder<'this> {
     ) -> Result<usize> {
         let anchored_slice = self.iovec.arena_read_n(reader, count, attempts)?;
         assert!(anchored_slice.slice().len() <= count);
-        let (slice, anchor) = unsafe { anchored_slice.components() };
+        let ret = Ok(anchored_slice.slice().len());
 
-        self.encode(slice);
-        self.iovec.push_anchor(anchor);
-
-        Ok(slice.len())
+        self.encode_anchored(anchored_slice);
+        ret
     }
 
     /// Flushes any pending encoding bytes and returns the underlying
@@ -181,6 +193,15 @@ impl<'this> Decoder<'this> {
         Ok(())
     }
 
+    /// Appends the contents of `data` to the bytes to decode.
+    pub fn decode_anchored(&mut self, data: AnchoredSlice) -> Result<()> {
+        let (slice, anchor) = unsafe { data.components() };
+
+        let ret = self.decode(slice);
+        self.iovec.push_anchor(anchor);
+        ret
+    }
+
     pub fn decode_read(
         &mut self,
         reader: impl Read,
@@ -189,12 +210,9 @@ impl<'this> Decoder<'this> {
     ) -> Result<usize> {
         let anchored_slice = self.iovec.arena_read_n(reader, count, attempts)?;
         assert!(anchored_slice.slice().len() <= count);
-        let (slice, anchor) = unsafe { anchored_slice.components() };
+        let len = anchored_slice.slice().len();
 
-        let ret = self.decode(slice);
-        self.iovec.push_anchor(anchor);
-
-        ret.and(Ok(slice.len()))
+        self.decode_anchored(anchored_slice).and(Ok(len))
     }
 
     /// Returns the underlying `OwningIovec`, if the input is complete.
