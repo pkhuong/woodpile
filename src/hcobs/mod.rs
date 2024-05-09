@@ -112,11 +112,13 @@ impl<'this> Encoder<'this> {
         self.iovec.push_anchor(anchor);
     }
 
-    /// Reads up to `count` bytes from `reader in up to `attempts`
-    /// calls to `reader.read()`, and appends the resulting data
-    /// to the bytes to encde.
+    /// Convenience wrapper around `self.iovec().arena_read_n` and [`Self::encode_anchored`].
     ///
-    /// Returns the number of bytes read.
+    /// Reads up to `count` bytes from `reader` with up to `attempts` calls, then
+    /// encodes the bytes read.
+    ///
+    /// On success. returns the number of bytes read from `reader`.  Failure can
+    /// only happen during reading.
     pub fn encode_read(
         &mut self,
         reader: impl Read,
@@ -125,10 +127,10 @@ impl<'this> Encoder<'this> {
     ) -> Result<usize> {
         let anchored_slice = self.iovec.arena_read_n(reader, count, attempts)?;
         assert!(anchored_slice.slice().len() <= count);
-        let ret = Ok(anchored_slice.slice().len());
+        let ret = anchored_slice.slice().len();
 
         self.encode_anchored(anchored_slice);
-        ret
+        Ok(ret)
     }
 
     /// Flushes any pending encoding bytes and returns the underlying
@@ -202,6 +204,13 @@ impl<'this> Decoder<'this> {
         ret
     }
 
+    /// Convenience wrapper around `self.iovec().arena_read_n` and [`Self::decode_anchored`].
+    ///
+    /// Reads up to `count` bytes from `reader` with up to `attempts` calls, then
+    /// attempts to decode the bytes read.
+    ///
+    /// On success. returns the number of bytes read from `reader`.  Failure could
+    /// happen during reading or decoding.
     pub fn decode_read(
         &mut self,
         reader: impl Read,
