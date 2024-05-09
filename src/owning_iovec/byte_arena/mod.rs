@@ -19,12 +19,21 @@ use alloc_cache::AllocCache;
 pub use anchor::Anchor;
 
 /// A [`ByteArena`] manages allocation caches (bump pointer regions).
+///
+/// While a default-constructed [`ByteArena`] is valid (and does not
+/// allocate anything ahead of time), they're usually obtained through
+/// [`super::OwningIovec::take_arena`].
 #[derive(Debug, Default)]
 pub struct ByteArena {
     cache: Option<AllocCache>,
 }
 
-/// An [`AnchoredSlice`] is a slice backed by an internal anchor.
+/// An [`AnchoredSlice`] is a slice of `[u8`] backed by an internal
+/// refcounted allocation.
+///
+/// It's usually obtained by calling [`ByteArena::read_n`] or
+/// [`super::OwningIovec::arena_read_n`], but the default value is a
+/// valid empty slice.
 #[derive(Clone, Debug, Default)]
 pub struct AnchoredSlice {
     slice: &'static [u8], // actually lives as long as `anchor`.
@@ -366,6 +375,20 @@ impl AnchoredSlice {
 }
 
 impl ByteArena {
+    /// Reads up to `count` bytes from `src`, by making up to `max_attempts` calls
+    /// to `Read::read`.
+    ///
+    /// Returns the resulting slice on success.
+    ///
+    /// This method retries on [`std::io::ErrorKind::Interrupted`] and
+    /// short reads.  It stops at the first error or zero-sized read
+    /// (EOF).  Calls to this method always succeed when at least 1
+    /// byte was read; otherwise, the method returns the last error
+    /// encountered (the first non-`EINTR`, unless it's all `EINTR`).
+    ///
+    /// This method returns `Ok(0)` iff `src.read()` does as well, i.e.,
+    /// on EOF.  A string of `max_attempts` [`std::io::ErrorKind::Interrupted`]
+    /// instead results in returning that as an error.
     pub fn read_n(
         &mut self,
         src: impl Read,
@@ -412,6 +435,7 @@ impl ByteArena {
     ) -> std::io::Result<&'static [u8]> {
         slice.fill(0); // XXX: unfortunately...
         let mut got = 0usize;
+        let mut err: Option<std::io::Error> = None;
 
         for _ in 0..max_attempts.get() {
             let ret = src.read(&mut slice[got..]);
@@ -420,13 +444,16 @@ impl ByteArena {
                 Ok(count) => {
                     got += count;
                     if count == 0 {
-                        break; // EOF
+                        // EOF: bail out with Ok(len).
+                        err = None;
+                        break;
                     }
                 }
                 Err(e) => {
-                    if got == 0 {
-                        return Err(e);
-                    } else if e.kind() != std::io::ErrorKind::Interrupted {
+                    let kind = e.kind();
+                    err.replace(e);
+                    if kind != std::io::ErrorKind::Interrupted {
+                        // Stop at the first real error.
                         break;
                     }
                 }
@@ -437,7 +464,10 @@ impl ByteArena {
             }
         }
 
-        Ok(&slice[..got])
+        match (got, err) {
+            (0, Some(e)) => Err(e),
+            _ => Ok(&slice[..got]),
+        }
     }
 }
 
