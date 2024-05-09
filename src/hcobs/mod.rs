@@ -424,3 +424,85 @@ fn prod_decode_bad() {
         assert!(decoder.finish().is_err());
     }
 }
+
+#[test]
+#[ignore]
+fn prod_encode_streaming() {
+    assert_eq!(crate::ByteArena::num_live_chunks(), 0);
+    assert_eq!(crate::ByteArena::num_live_bytes(), 0);
+
+    let mut encoder: Encoder<'_> = Default::default();
+    let payload = [1u8; 1000];
+
+    for _ in 0..10000 {
+        encoder.encode_copy(&payload);
+        let prefix = encoder.iovec().stable_prefix();
+        if !prefix.is_empty() {
+            let len = prefix.len();
+            encoder.iovec().consume(len);
+        }
+    }
+
+    assert!(crate::ByteArena::num_live_chunks() <= 2);
+    assert!(crate::ByteArena::num_live_bytes() <= 2 * 1024 * 1024);
+
+    std::mem::drop(encoder);
+
+    assert_eq!(crate::ByteArena::num_live_chunks(), 0);
+    assert_eq!(crate::ByteArena::num_live_bytes(), 0);
+}
+
+#[test]
+#[ignore]
+fn prod_decode_streaming() {
+    assert_eq!(crate::ByteArena::num_live_chunks(), 0);
+    assert_eq!(crate::ByteArena::num_live_bytes(), 0);
+
+    let mut decoded_size = 0usize;
+    let payload = [1u8; 1000];
+    let mut encoder: Encoder<'_> = Default::default();
+
+    let mut decoder: Decoder<'_> = Default::default();
+
+    for _ in 0..10000 {
+        encoder.encode(&payload);
+        let prefix = encoder.iovec().stable_prefix();
+        for slice in prefix {
+            decoder.decode_copy(slice).expect("ok");
+        }
+
+        let len = prefix.len();
+        encoder.iovec().consume(len);
+
+        let prefix = decoder.iovec().stable_prefix();
+        for slice in prefix {
+            let slice: &[u8] = slice;
+            decoded_size += slice.len();
+            for byte in slice {
+                assert_eq!(*byte, 1u8);
+            }
+        }
+        let len = prefix.len();
+        decoder.iovec().consume(len);
+    }
+
+    assert!(crate::ByteArena::num_live_chunks() <= 3);
+    assert!(crate::ByteArena::num_live_bytes() <= 3 * 1024 * 1024);
+
+    let tail = encoder.finish().flatten().expect("no backpatch left");
+    decoder.decode_copy(&tail).expect("valid");
+
+    assert!(crate::ByteArena::num_live_chunks() <= 2);
+    assert!(crate::ByteArena::num_live_bytes() <= 2 * 1024 * 1024);
+
+    let decoded_tail = decoder.finish().unwrap().flatten().unwrap();
+    decoded_size += decoded_tail.len();
+    for byte in decoded_tail {
+        assert_eq!(byte, 1u8);
+    }
+
+    assert_eq!(decoded_size, 10_000 * payload.len());
+
+    assert_eq!(crate::ByteArena::num_live_chunks(), 0);
+    assert_eq!(crate::ByteArena::num_live_bytes(), 0);
+}
