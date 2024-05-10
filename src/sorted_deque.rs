@@ -6,10 +6,10 @@
 //!
 //! - values may only be inserted at the end (i.e., in strictly ascending order)
 //! - values may be searched (with binary search)
-//! = values may be marked as logically deleted, but are only physically deleted
+//! - values may be marked as logically deleted, but are only physically deleted
 //!   when they're the first or last value in FIFO (sorted) order.
 //!
-//! Insertion is amortied constant time, lookups are logarithmic time (although
+//! Insertion amortises to constant time, lookups are logarithmic time (although
 //! we must take into account items that are logically but not yet physically
 //! deleted), and deletion takes as much time as a lookup plus some amortised
 //! constant-time overhead.
