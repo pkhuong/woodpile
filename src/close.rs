@@ -333,6 +333,7 @@ pub fn close_epoch_subdir(
 }
 
 /// epoch_subdir_is_being_closed should return false on an empty epoch directory.
+#[cfg(not(miri))]
 #[test]
 fn test_being_closed_empty() {
     use test_dir::{DirBuilder, FileType, TestDir};
@@ -355,6 +356,7 @@ fn test_being_closed_empty() {
 
 /// epoch_subdir_is_being_closed should still return false when the snapshot subdirectory
 /// exists, but the IN_PROGRESS_MARKER file is absent.
+#[cfg(not(miri))]
 #[test]
 fn test_being_closed_not_yet() {
     use test_dir::{DirBuilder, FileType, TestDir};
@@ -381,6 +383,7 @@ fn test_being_closed_not_yet() {
 
 /// epoch_subdir_is_being_closed should return true when the IN_PROGRESS_MARKER exists
 /// in the SNAPSHOT_SUBDIR.
+#[cfg(not(miri))]
 #[test]
 fn test_being_closed_marker() {
     use test_dir::{DirBuilder, FileType, TestDir};
@@ -409,6 +412,7 @@ fn test_being_closed_marker() {
 
 /// epoch_subdir_is_being_closed should return true when the IN_PROGRESS_MARKER exists
 /// in the SNAPSHOT_SUBDIR, even if there's extra stuff in the SNAPSHOT_SUBDIR.
+#[cfg(not(miri))]
 #[test]
 fn test_being_closed_marker_2() {
     use test_dir::{DirBuilder, FileType, TestDir};
@@ -444,6 +448,7 @@ fn test_being_closed_marker_2() {
 /// closing an epoch should always succeed when we have a SUMMARY_FILE,
 /// even if the epoch isn't closed (the close-side code must avoid that
 /// situation).
+#[cfg(not(miri))]
 #[test]
 fn test_already_has_summary() {
     use test_dir::{DirBuilder, FileType, TestDir};
@@ -515,6 +520,7 @@ fn test_already_has_summary() {
 
 /// The epoch is still open after a successful call to `start_closing_epoch_subdir`,
 /// although we expect the directory and its files to be read-only.
+#[cfg(not(miri))]
 #[test]
 fn test_still_open_after_start() {
     use test_dir::{DirBuilder, FileType, TestDir};
@@ -593,6 +599,7 @@ fn test_still_open_after_start() {
 
 /// An early call to `start_closing_epoch_subdir` should no-op and
 /// return a deadline in the future.
+#[cfg(not(miri))]
 #[test]
 fn test_reject_early_close() {
     use test_dir::{DirBuilder, FileType, TestDir};
@@ -653,6 +660,7 @@ fn test_reject_early_close() {
 }
 
 /// Test that we remove the file that matches, and not the file that doesn't match.
+#[cfg(not(miri))]
 #[test]
 fn test_cleanup_directory_by_prefix() {
     use test_dir::{DirBuilder, FileType, TestDir};
@@ -679,6 +687,7 @@ fn test_cleanup_directory_by_prefix() {
 }
 
 /// An early call to `close_epoch_subdir` should no-op and return a deadline in the future.
+#[cfg(not(miri))]
 #[test]
 fn test_reject_early_close_2() {
     use test_dir::{DirBuilder, FileType, TestDir};
@@ -746,6 +755,7 @@ fn test_reject_early_close_2() {
 
 /// An early call to `close_epoch_subdir` should no-op and return a deadline in the future,
 /// even after a "good" call to `start_closing_epoch_subdir`.
+#[cfg(not(miri))]
 #[test]
 fn test_reject_close_3() {
     use test_dir::{DirBuilder, FileType, TestDir};
@@ -818,6 +828,7 @@ fn test_reject_close_3() {
 
 /// An early call to `close_epoch_subdir` should no-op and return a deadline in the future,
 /// even its internal call to `start_closing_epoch_subdir` succeeds.
+#[cfg(not(miri))]
 #[test]
 fn test_reject_close_4() {
     use test_dir::{DirBuilder, FileType, TestDir};
@@ -888,6 +899,7 @@ fn test_reject_close_4() {
 }
 
 /// Closing an epoch with one log file should copy its contents to the summary file.
+#[cfg(not(miri))]
 #[test]
 fn test_close_one_file() {
     use test_dir::{DirBuilder, FileType, TestDir};
@@ -960,6 +972,7 @@ fn test_close_one_file() {
 }
 
 /// Closing an epoch with two log files should copy their contents to the summary file.
+#[cfg(not(miri))]
 #[test]
 fn test_close_two_files() {
     use test_dir::{DirBuilder, FileType, TestDir};
@@ -1024,6 +1037,7 @@ fn test_close_two_files() {
 }
 
 /// Closing an epoch twice in a row should succeed and find the correct values.
+#[cfg(not(miri))]
 #[test]
 fn test_close_twice() {
     use test_dir::{DirBuilder, FileType, TestDir};

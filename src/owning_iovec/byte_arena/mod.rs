@@ -10,8 +10,8 @@
 mod alloc_cache;
 mod anchor;
 
+use std::io::IoSlice;
 use std::io::Read;
-use std::mem::MaybeUninit;
 use std::num::NonZeroUsize;
 use std::sync::atomic::Ordering;
 
@@ -34,10 +34,26 @@ pub struct ByteArena {
 /// It's usually obtained by calling [`ByteArena::read_n`] or
 /// [`super::OwningIovec::arena_read_n`], but the default value is a
 /// valid empty slice.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct AnchoredSlice {
-    slice: &'static [u8], // actually lives as long as `anchor`.
+    slice: IoSlice<'static>, // actually lives as long as `anchor`.
     anchor: Anchor,
+}
+
+impl Default for AnchoredSlice {
+    fn default() -> Self {
+        const EMPTY: [u8; 0] = [];
+
+        let slice = libc::iovec {
+            iov_base: EMPTY.as_ptr() as *mut _,
+            iov_len: 0,
+        };
+
+        Self {
+            slice: unsafe { std::mem::transmute(slice) },
+            anchor: Default::default(),
+        }
+    }
 }
 
 impl Clone for ByteArena {
@@ -110,7 +126,7 @@ impl ByteArena {
     /// Determines whether `slice` was the last slice allocated by the
     /// [`ByteArena`]'s current allocation cache.
     #[inline(always)]
-    pub fn is_last(&self, slice: &[u8]) -> bool {
+    pub fn is_last(&self, slice: IoSlice<'_>) -> bool {
         match &self.cache {
             Some(cache) => {
                 unsafe { self.contains(slice) }.is_some()
@@ -203,12 +219,17 @@ impl ByteArena {
     /// The return value's lifetime is a lie.  This method should only be used in
     /// `try_join`.
     #[inline(always)]
-    unsafe fn contains(&self, slice: &[u8]) -> Option<&'static [u8]> {
-        let range = &self.cache.as_ref()?.range();
-        let endpoints = slice.as_ptr_range();
+    unsafe fn contains(&self, slice: IoSlice<'_>) -> Option<IoSlice<'static>> {
+        #[cfg(not(unix))]
+        return None;
 
-        if (range.start <= (endpoints.start as usize)) & ((endpoints.end as usize) <= range.end) {
-            Some(unsafe { std::slice::from_raw_parts(endpoints.start, slice.len()) })
+        let range = &self.cache.as_ref()?.range();
+        let slice: libc::iovec = unsafe { std::mem::transmute(slice) };
+        let base = slice.iov_base as usize;
+        let end = base + slice.iov_len;
+
+        if (range.start <= base) & (end <= range.end) {
+            Some(unsafe { std::mem::transmute(slice) })
         } else {
             None
         }
@@ -224,12 +245,25 @@ impl ByteArena {
     /// The return value must not outlast the slices' anchor(s).  The
     /// static lifetime is a lie.
     #[inline(always)]
-    pub(super) unsafe fn try_join(&self, left: &[u8], right: &[u8]) -> Option<&'static [u8]> {
+    pub(super) unsafe fn try_join(
+        &self,
+        left: IoSlice<'_>,
+        right: IoSlice<'_>,
+    ) -> Option<IoSlice<'static>> {
+        #[cfg(not(unix))]
+        return None;
+
         if let (Some(left), Some(right)) = unsafe { (self.contains(left), self.contains(right)) } {
-            if left.as_ptr_range().end == right.as_ptr_range().start {
-                let start = left.as_ptr_range().start;
-                let total_size = left.len() + right.len();
-                return Some(unsafe { std::slice::from_raw_parts(start, total_size) });
+            let left: libc::iovec = unsafe { std::mem::transmute(left) };
+            let right: libc::iovec = unsafe { std::mem::transmute(right) };
+            if (left.iov_base as usize + left.iov_len) == (right.iov_base as usize) {
+                let iov = libc::iovec {
+                    iov_base: left.iov_base,
+                    iov_len: left.iov_len + right.iov_len,
+                };
+
+                let ioslice = unsafe { std::mem::transmute(iov) };
+                return Some(ioslice);
             }
         }
 
@@ -243,7 +277,7 @@ impl ByteArena {
         &mut self,
         len: usize,
         old_anchor: Option<&mut Anchor>,
-    ) -> (&'static mut [MaybeUninit<u8>], Option<Anchor>) {
+    ) -> (IoSlice<'static>, Option<Anchor>) {
         let cache = self.ensure_capacity_internal(len);
         // we just ensured capacity
         unsafe { cache.alloc_or_die(len, old_anchor) }
@@ -265,7 +299,7 @@ impl ByteArena {
         &mut self,
         len: NonZeroUsize,
         old_anchor: Option<&mut Anchor>,
-    ) -> (&'static mut [MaybeUninit<u8>], Option<Anchor>) {
+    ) -> (IoSlice<'static>, Option<Anchor>) {
         // The cache grabs bytes from a slice that belongs to
         // `self.backing`, so the storage lives at least as long as
         // the anchor.
@@ -295,29 +329,29 @@ impl ByteArena {
         &mut self,
         src: &[u8],
         old_anchor: Option<&mut Anchor>,
-    ) -> (&'static mut [u8], Option<Anchor>) {
+    ) -> (IoSlice<'static>, Option<Anchor>) {
         // zero-sized allocation and memcpy have surprising aliasing consequences.
         assert!(!src.is_empty());
 
         let (dst, anchor) =
             unsafe { self.alloc(NonZeroUsize::new(src.len()).unwrap(), old_anchor) };
 
-        let dst_ptr = dst.as_mut_ptr() as *mut u8;
-        let len = dst.len();
+        let iov: libc::iovec = unsafe { std::mem::transmute(dst) };
+
+        let dst_ptr = iov.iov_base as *mut u8;
+        let len = iov.iov_len;
 
         assert_eq!(len, src.len());
         unsafe { dst_ptr.copy_from_nonoverlapping(src.as_ptr(), len) };
-        (
-            unsafe { std::slice::from_raw_parts_mut(dst_ptr, len) },
-            anchor,
-        )
+
+        (unsafe { std::mem::transmute(iov) }, anchor)
     }
 }
 
 impl AnchoredSlice {
     /// Returns the anchored data.
     pub fn slice(&self) -> &[u8] {
-        self.slice
+        &self.slice
     }
 
     /// Skips up to the first `count` bytes in the anchored data,
@@ -325,8 +359,12 @@ impl AnchoredSlice {
     ///
     /// Returns the number of bytes actually skipped.
     pub fn skip_prefix(&mut self, count: usize) -> usize {
-        let count = count.min(self.slice.len());
-        self.slice = &self.slice[count..];
+        let mut slice: libc::iovec = unsafe { std::mem::transmute(self.slice) };
+
+        let count = count.min(slice.iov_len);
+        slice.iov_base = unsafe { slice.iov_base.add(count) };
+        slice.iov_len -= count;
+        self.slice = unsafe { std::mem::transmute(slice) };
         count
     }
 
@@ -335,8 +373,10 @@ impl AnchoredSlice {
     ///
     /// Returns the number of bytes actually skipped.
     pub fn drop_suffix(&mut self, count: usize) -> usize {
-        let count = count.min(self.slice.len());
-        self.slice = &self.slice[..self.slice.len() - count];
+        let mut slice: libc::iovec = unsafe { std::mem::transmute(self.slice) };
+        let count = count.min(slice.iov_len);
+        slice.iov_len -= count;
+        self.slice = unsafe { std::mem::transmute(slice) };
         count
     }
 
@@ -344,16 +384,25 @@ impl AnchoredSlice {
     /// first `mid` bytes (or the whole slice), and the second has any
     /// remaining data.
     pub fn split_at(self, mid: usize) -> (AnchoredSlice, AnchoredSlice) {
-        if mid >= self.slice.len() {
+        let slice: libc::iovec = unsafe { std::mem::transmute(self.slice) };
+        if mid >= slice.iov_len {
             (self, Default::default())
         } else {
-            let (left, right) = self.slice.split_at(mid);
+            let left_slice = libc::iovec {
+                iov_base: slice.iov_base,
+                iov_len: mid,
+            };
+            let right_slice = libc::iovec {
+                iov_base: unsafe { slice.iov_base.add(mid) },
+                iov_len: slice.iov_len - mid,
+            };
+
             let left = AnchoredSlice {
-                slice: left,
+                slice: unsafe { std::mem::transmute(left_slice) },
                 anchor: self.anchor.clone(),
             };
             let right = AnchoredSlice {
-                slice: right,
+                slice: unsafe { std::mem::transmute(right_slice) },
                 anchor: self.anchor,
             };
 
@@ -369,8 +418,10 @@ impl AnchoredSlice {
     /// Calling `AnchoredSlice::components` is safe in itself, but the
     /// returned slice's lifetime is a lie.  It must never actually
     /// outlive its `Anchor`.
-    pub unsafe fn components(self) -> (&'static [u8], Anchor) {
-        (self.slice, self.anchor)
+    pub unsafe fn components(self) -> (IoSlice<'static>, &'static [u8], Anchor) {
+        let iov: libc::iovec = unsafe { std::mem::transmute(self.slice) };
+        let slice = unsafe { std::slice::from_raw_parts(iov.iov_base as *const u8, iov.iov_len) };
+        (self.slice, slice, self.anchor)
     }
 }
 
@@ -395,27 +446,31 @@ impl ByteArena {
         count: usize,
         max_attempts: NonZeroUsize,
     ) -> std::io::Result<AnchoredSlice> {
-        const EMPTY: [u8; 0] = [];
         if count == 0 {
-            return Ok(AnchoredSlice {
-                slice: &EMPTY,
-                anchor: Default::default(),
-            });
+            return Ok(Default::default());
         }
 
         let (raw_slice, anchor) = unsafe { self.alloc(NonZeroUsize::new(count).unwrap(), None) };
-        assert_eq!(raw_slice.len(), count);
+        let raw_slice: libc::iovec = unsafe { std::mem::transmute(raw_slice) };
+        assert_eq!(raw_slice.iov_len, count);
         let slice: &'static mut [u8] =
-            unsafe { std::slice::from_raw_parts_mut(raw_slice.as_mut_ptr() as *mut u8, count) };
+            unsafe { std::slice::from_raw_parts_mut(raw_slice.iov_base as *mut u8, count) };
 
         match self.read_n_impl(src, slice, max_attempts) {
-            Ok(slice) => {
-                self.cache
-                    .as_mut()
-                    .unwrap()
-                    .release_or_die(&raw_slice[slice.len()..]);
+            Ok(got) => {
+                assert!(got <= count);
+                let read_slice = libc::iovec {
+                    iov_base: raw_slice.iov_base,
+                    iov_len: got,
+                };
+                let remainder = libc::iovec {
+                    iov_base: unsafe { raw_slice.iov_base.add(got) },
+                    iov_len: count - got,
+                };
+                self.cache.as_mut().unwrap().release_or_die(remainder);
+
                 Ok(AnchoredSlice {
-                    slice,
+                    slice: unsafe { std::mem::transmute(read_slice) },
                     anchor: anchor.unwrap_or_default(),
                 })
             }
@@ -432,7 +487,7 @@ impl ByteArena {
         mut src: impl Read,
         slice: &'static mut [u8],
         max_attempts: NonZeroUsize,
-    ) -> std::io::Result<&'static [u8]> {
+    ) -> std::io::Result<usize> {
         slice.fill(0); // XXX: unfortunately...
         let mut got = 0usize;
         let mut err: Option<std::io::Error> = None;
@@ -466,7 +521,7 @@ impl ByteArena {
 
         match (got, err) {
             (0, Some(e)) => Err(e),
-            _ => Ok(&slice[..got]),
+            _ => Ok(got),
         }
     }
 }
@@ -477,7 +532,7 @@ impl ByteArena {
 // Check that we correctly round up to at least the allocation size,
 // and don't consider the previous capacity when doing so.
 #[test]
-fn test_size_sequence_large() {
+fn test_size_sequence_large_miri() {
     // Huge allocation -> just round up.
     assert_eq!(ByteArena::find_hint_size(2_000_000, 4096), 2002944);
     assert_eq!(2002944, 489 * 4096);
@@ -492,7 +547,7 @@ fn test_size_sequence_large() {
 // Check that we don't try to grow past the maximum region size when
 // the mandatory size is small.
 #[test]
-fn test_size_sequence_grow_capped() {
+fn test_size_sequence_grow_capped_miri() {
     // Small allocation, but large initial size.  Stay at the max value.
     let max = *BUMP_REGION_SIZE_SEQUENCE.last().unwrap();
     assert_eq!(ByteArena::find_hint_size(1, max - 1), max);
@@ -502,7 +557,7 @@ fn test_size_sequence_grow_capped() {
 
 // Check that we grow geometrically.
 #[test]
-fn test_size_sequence_grow() {
+fn test_size_sequence_grow_miri() {
     assert_eq!(
         ByteArena::find_hint_size(1, 0),
         *BUMP_REGION_SIZE_SEQUENCE.first().unwrap()
@@ -523,7 +578,7 @@ fn test_size_sequence_grow() {
 }
 
 #[test]
-fn test_anchored_slice() {
+fn test_anchored_slice_miri() {
     let mut arena = ByteArena::new();
     let (data, anchor) = unsafe { arena.copy(b"0123456789", None) };
 

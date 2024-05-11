@@ -1,5 +1,6 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
+use std::io::IoSlice;
 use std::mem::MaybeUninit;
 use std::ops::Range;
 use std::sync::Arc;
@@ -92,7 +93,7 @@ impl AllocCache {
         &mut self,
         wanted: usize,
         old_anchor: Option<&mut Anchor>,
-    ) -> (&'static mut [MaybeUninit<u8>], Option<Anchor>) {
+    ) -> (IoSlice<'static>, Option<Anchor>) {
         assert!(self.range.start <= self.bump);
         assert!(self.bump <= self.range.end);
 
@@ -101,26 +102,29 @@ impl AllocCache {
         assert!(end - bump >= wanted);
 
         // SAFETY: bump + wanted <= end
-        let ret = unsafe { std::slice::from_raw_parts_mut(self.bump, wanted) };
+        let ret = libc::iovec {
+            iov_base: self.bump as *mut _,
+            iov_len: wanted,
+        };
         self.bump = unsafe { self.bump.add(wanted) };
 
         // Avoid cloning `self.backing` if possible.
         let anchor = Anchor::merge_ref_or_create(old_anchor, &self.backing);
-        (ret, anchor)
+        (unsafe { std::mem::transmute(ret) }, anchor)
     }
 
     /// Marks the bytes in `remainder` as available for new allocations.
     ///
     /// This `remainder` slice must come from allocation cache and stop
     /// right at the current bump pointer.
-    pub fn release_or_die(&mut self, remainder: &[MaybeUninit<u8>]) {
-        let addr = remainder.as_ptr() as usize;
-        let end_addr = addr + remainder.len();
+    pub fn release_or_die(&mut self, remainder: libc::iovec) {
+        let addr = remainder.iov_base as usize;
+        let end_addr = addr + remainder.iov_len;
 
         assert!(self.range().contains(&addr));
         assert_eq!(self.bump as usize, end_addr);
 
         // SAFETY: `remainder` is fully in the backing chunk.
-        self.bump = unsafe { self.bump.sub(remainder.len()) };
+        self.bump = unsafe { self.bump.sub(remainder.iov_len) };
     }
 }

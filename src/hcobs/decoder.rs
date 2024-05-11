@@ -285,7 +285,7 @@ fn decode_with_test_params(bytes: &[u8]) -> Result<Vec<u8>> {
 
 // Test some expected input/output pairs
 #[test]
-fn test_simple() {
+fn test_simple_miri() {
     assert_eq!(decode_with_test_params(b"\x00").unwrap(), b"");
     assert_eq!(decode_with_test_params(b"\x011").unwrap(), b"1");
     assert_eq!(decode_with_test_params(b"\x0212").unwrap(), b"12");
@@ -337,7 +337,7 @@ fn test_simple() {
 }
 
 #[test]
-fn test_error() {
+fn test_error_miri() {
     // Bad initial header
 
     // Truncated
@@ -434,13 +434,16 @@ fn compare_decode_with_test_params(
 // Start decoding up to `start`, the fork decoding (one incremental, one not),
 // and confirm we have the same final state.
 #[test]
-fn test_incremental() {
+fn test_incremental_slow() {
     let patterns = &[
         b"\x03123\x02\x004\xFE\x00\x00",
         b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09",
         b"\x0212\x05\x0045678",
         b"\x00\x05\x0045678\x00\x00",
     ];
+
+    #[cfg(miri)]
+    let patterns = &patterns[..2];
 
     for pattern in patterns {
         for start in 0..pattern.len() {

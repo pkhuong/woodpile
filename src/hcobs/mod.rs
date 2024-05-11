@@ -106,7 +106,7 @@ impl<'this> Encoder<'this> {
 
     /// Appends the bytes in `data` to the bytes to encode.
     pub fn encode_anchored(&mut self, data: AnchoredSlice) {
-        let (slice, anchor) = unsafe { data.components() };
+        let (_, slice, anchor) = unsafe { data.components() };
 
         self.encode(slice);
         self.iovec.push_anchor(anchor);
@@ -197,7 +197,7 @@ impl<'this> Decoder<'this> {
 
     /// Appends the contents of `data` to the bytes to decode.
     pub fn decode_anchored(&mut self, data: AnchoredSlice) -> Result<()> {
-        let (slice, anchor) = unsafe { data.components() };
+        let (_, slice, anchor) = unsafe { data.components() };
 
         let ret = self.decode(slice);
         self.iovec.push_anchor(anchor);
@@ -264,7 +264,7 @@ impl Read for BadReader {
 
 // Smoke test the public interface.
 #[test]
-fn smoke_test() {
+fn smoke_test_miri() {
     let mut encoder: Encoder<'_> = Default::default();
 
     encoder.iovec().ensure_arena_capacity(10);
@@ -379,7 +379,7 @@ fn smoke_test() {
 
 // make sure we can consume incrementally with the prod interface.
 #[test]
-fn prod_peek() {
+fn prod_peek_miri() {
     let mut encoder: Encoder<'_> = Default::default();
 
     // The initial cache is 4KB, write that much.
@@ -425,7 +425,7 @@ fn prod_peek() {
 
 // Exercise error handling in decoding.
 #[test]
-fn prod_decode_bad() {
+fn prod_decode_bad_miri() {
     {
         let mut decoder: Decoder<'_> = Default::default();
 
@@ -453,87 +453,109 @@ fn prod_decode_bad() {
 }
 
 #[cfg(test)]
-use rusty_fork::rusty_fork_test;
+fn prod_encode_streaming(repeat: usize) {
+    assert_eq!(crate::ByteArena::num_live_chunks(), 0);
+    assert_eq!(crate::ByteArena::num_live_bytes(), 0);
+
+    let mut encoder: Encoder<'_> = Default::default();
+    let payload = [1u8; 1000];
+
+    for _ in 0..repeat {
+        encoder.encode_copy(&payload);
+        let prefix = encoder.iovec().stable_prefix();
+        if !prefix.is_empty() {
+            let len = prefix.len();
+            encoder.iovec().consume(len);
+        }
+    }
+
+    assert!(crate::ByteArena::num_live_chunks() <= 2);
+    assert!(crate::ByteArena::num_live_bytes() <= 2 * 1024 * 1024);
+
+    std::mem::drop(encoder);
+
+    assert_eq!(crate::ByteArena::num_live_chunks(), 0);
+    assert_eq!(crate::ByteArena::num_live_bytes(), 0);
+}
+
+#[cfg(miri)]
+#[test]
+fn prod_encode_streaming_slow() {
+    prod_encode_streaming(400);
+}
 
 #[cfg(test)]
-rusty_fork_test! {
-    #[test]
-    fn prod_encode_streaming() {
-        assert_eq!(crate::ByteArena::num_live_chunks(), 0);
-        assert_eq!(crate::ByteArena::num_live_bytes(), 0);
+fn prod_decode_streaming(repeat: usize) {
+    assert_eq!(crate::ByteArena::num_live_chunks(), 0);
+    assert_eq!(crate::ByteArena::num_live_bytes(), 0);
 
-        let mut encoder: Encoder<'_> = Default::default();
-        let payload = [1u8; 1000];
+    let mut decoded_size = 0usize;
+    let payload = [1u8; 1000];
+    let mut encoder: Encoder<'_> = Default::default();
 
-        for _ in 0..10000 {
-            encoder.encode_copy(&payload);
-            let prefix = encoder.iovec().stable_prefix();
-            if !prefix.is_empty() {
-                let len = prefix.len();
-                encoder.iovec().consume(len);
-            }
+    let mut decoder: Decoder<'_> = Default::default();
+
+    for _ in 0..repeat {
+        encoder.encode(&payload);
+        let prefix = encoder.iovec().stable_prefix();
+        for slice in prefix {
+            decoder.decode_copy(slice).expect("ok");
         }
 
-        assert!(crate::ByteArena::num_live_chunks() <= 2);
-        assert!(crate::ByteArena::num_live_bytes() <= 2 * 1024 * 1024);
+        let len = prefix.len();
+        encoder.iovec().consume(len);
 
-        std::mem::drop(encoder);
+        let prefix = decoder.iovec().stable_prefix();
+        for slice in prefix {
+            let slice: &[u8] = slice;
+            decoded_size += slice.len();
+            for byte in slice {
+                assert_eq!(*byte, 1u8);
+            }
+        }
+        let len = prefix.len();
+        decoder.iovec().consume(len);
+    }
 
-        assert_eq!(crate::ByteArena::num_live_chunks(), 0);
-        assert_eq!(crate::ByteArena::num_live_bytes(), 0);
+    assert!(crate::ByteArena::num_live_chunks() <= 3);
+    assert!(crate::ByteArena::num_live_bytes() <= 3 * 1024 * 1024);
+
+    let tail = encoder.finish().flatten().expect("no backpatch left");
+    decoder.decode_copy(&tail).expect("valid");
+
+    assert!(crate::ByteArena::num_live_chunks() <= 2);
+    assert!(crate::ByteArena::num_live_bytes() <= 2 * 1024 * 1024);
+
+    let decoded_tail = decoder.finish().unwrap().flatten().unwrap();
+    decoded_size += decoded_tail.len();
+    for byte in decoded_tail {
+        assert_eq!(byte, 1u8);
+    }
+
+    assert_eq!(decoded_size, repeat * payload.len());
+
+    assert_eq!(crate::ByteArena::num_live_chunks(), 0);
+    assert_eq!(crate::ByteArena::num_live_bytes(), 0);
+}
+
+#[cfg(miri)]
+#[test]
+fn prod_decode_streaming_slow() {
+    prod_decode_streaming(400);
+}
+
+#[cfg(all(test, not(miri)))]
+use rusty_fork::rusty_fork_test;
+
+#[cfg(all(test, not(miri)))]
+rusty_fork_test! {
+    #[test]
+    fn prod_encode_streaming_fork() {
+        prod_encode_streaming(10000);
     }
 
     #[test]
-    fn prod_decode_streaming() {
-        assert_eq!(crate::ByteArena::num_live_chunks(), 0);
-        assert_eq!(crate::ByteArena::num_live_bytes(), 0);
-
-        let mut decoded_size = 0usize;
-        let payload = [1u8; 1000];
-        let mut encoder: Encoder<'_> = Default::default();
-
-        let mut decoder: Decoder<'_> = Default::default();
-
-        for _ in 0..10000 {
-            encoder.encode(&payload);
-            let prefix = encoder.iovec().stable_prefix();
-            for slice in prefix {
-                decoder.decode_copy(slice).expect("ok");
-            }
-
-            let len = prefix.len();
-            encoder.iovec().consume(len);
-
-            let prefix = decoder.iovec().stable_prefix();
-            for slice in prefix {
-                let slice: &[u8] = slice;
-                decoded_size += slice.len();
-                for byte in slice {
-                    assert_eq!(*byte, 1u8);
-                }
-            }
-            let len = prefix.len();
-            decoder.iovec().consume(len);
-        }
-
-        assert!(crate::ByteArena::num_live_chunks() <= 3);
-        assert!(crate::ByteArena::num_live_bytes() <= 3 * 1024 * 1024);
-
-        let tail = encoder.finish().flatten().expect("no backpatch left");
-        decoder.decode_copy(&tail).expect("valid");
-
-        assert!(crate::ByteArena::num_live_chunks() <= 2);
-        assert!(crate::ByteArena::num_live_bytes() <= 2 * 1024 * 1024);
-
-        let decoded_tail = decoder.finish().unwrap().flatten().unwrap();
-        decoded_size += decoded_tail.len();
-        for byte in decoded_tail {
-            assert_eq!(byte, 1u8);
-        }
-
-        assert_eq!(decoded_size, 10_000 * payload.len());
-
-        assert_eq!(crate::ByteArena::num_live_chunks(), 0);
-        assert_eq!(crate::ByteArena::num_live_bytes(), 0);
+    fn prod_decode_streaming_fork() {
+        prod_decode_streaming(10000);
     }
 }

@@ -157,7 +157,7 @@ impl VouchedTime {
 
 // Check that we can construct `VouchedTime`s with an exact match on the base time.
 #[test]
-fn test_happy_path() {
+fn test_happy_path_miri() {
     let vouch_params = raffle::VouchingParameters::parse_or_die(
         "VOUCH-773ec2a0e62c20cd-f9e079b78e895091-fc1da7b1b77c57cb-594b9cce3091464a",
     );
@@ -175,18 +175,20 @@ fn test_happy_path() {
         datetime!(2024-04-13 17:00:59),
     );
 
-    let now = || {
-        let now = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
-        Ok((now, vouch_params.vouch(now)))
-    };
+    if !cfg!(miri) {
+        let now = || {
+            let now = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as u64;
+            Ok((now, vouch_params.vouch(now)))
+        };
 
-    println!("{:?}", VouchedTime::now_or_die(now));
-    println!("{:?}", VouchedTime::now(now).expect("must succeed"));
+        println!("{:?}", VouchedTime::now_or_die(now));
+        println!("{:?}", VouchedTime::now(now).expect("must succeed"));
+    }
 }
 
 // Go right at the end of the allowed discrepancy between the base time and the local time.
 #[test]
-fn test_limit() {
+fn test_limit_miri() {
     let vouch_params = raffle::VouchingParameters::parse_or_die(
         "VOUCH-773ec2a0e62c20cd-f9e079b78e895091-fc1da7b1b77c57cb-594b9cce3091464a",
     );
@@ -233,7 +235,7 @@ fn test_limit() {
 
 #[test]
 #[should_panic(expected = "failed to construct VouchedTime")]
-fn test_panic_new() {
+fn test_panic_new_miri() {
     let vouch_params = raffle::VouchingParameters::parse_or_die(
         "VOUCH-773ec2a0e62c20cd-f9e079b78e895091-fc1da7b1b77c57cb-594b9cce3091464a",
     );
@@ -245,6 +247,7 @@ fn test_panic_new() {
     );
 }
 
+#[cfg(not(miri))]
 #[test]
 #[should_panic(expected = "failed to construct VouchedTime")]
 fn test_panic_now() {
@@ -265,7 +268,7 @@ fn test_panic_now() {
 
 #[test]
 #[should_panic(expected = "failed to construct VouchedTime")]
-fn test_panic_now_bad_time() {
+fn test_panic_now_bad_time_miri() {
     let now = || Err(std::io::Error::other("time callback failed"));
 
     VouchedTime::now_or_die(now);
@@ -273,7 +276,7 @@ fn test_panic_now_bad_time() {
 
 // Reject bad vouchers.
 #[test]
-fn test_invalid() {
+fn test_invalid_miri() {
     let vouch_params = raffle::VouchingParameters::parse_or_die(
         "VOUCH-773ec2a0e62c20cd-f9e079b78e895091-fc1da7b1b77c57cb-594b9cce3091464a",
     );
@@ -332,7 +335,7 @@ fn test_invalid() {
 // Make sure we correctly handle (or at least reject) values beyond or
 // at the edge of the representable range.
 #[test]
-fn test_boundaries() {
+fn test_boundaries_miri() {
     assert!(VouchedTime::check_vouched_time(
         time::PrimitiveDateTime::MAX
             .assume_utc()

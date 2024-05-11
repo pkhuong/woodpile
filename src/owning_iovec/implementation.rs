@@ -73,6 +73,11 @@ const SMALL_COPY: usize = 64;
 /// Copy when the source is at most this long and we'd extend the last IoSlice.
 const MAX_OPPORTUNISTIC_COPY: usize = 256;
 
+fn ioslice_len(slice: IoSlice<'_>) -> usize {
+    let iov: libc::iovec = unsafe { std::mem::transmute(slice) };
+    iov.iov_len
+}
+
 impl<'this> OwningIovec<'this> {
     /// Creates an empty instance that will allocate from its fresh
     /// private arena.
@@ -231,7 +236,7 @@ impl<'this> OwningIovec<'this> {
             & (self
                 .slices
                 .last_slice()
-                .map(|slice| self.arena.is_last(&slice))
+                .map(|slice| self.arena.is_last(slice))
                 == Some(true));
 
         if small | appendable {
@@ -264,7 +269,7 @@ impl<'this> OwningIovec<'this> {
 
         let last_anchor = self.slices.last_anchor();
         let (slice, anchor) = unsafe { self.arena.copy(src, last_anchor) };
-        self.slices.push((IoSlice::new(slice), anchor));
+        self.slices.push((slice, anchor));
         self.optimize();
     }
 
@@ -324,7 +329,7 @@ impl<'this> OwningIovec<'this> {
         let logical_index = self.slices.logical_size() - (pattern_size as u64);
         let info = BackrefInfo {
             slice_index: self.slices.last_logical_slice_index(),
-            begin: self.slices.last_slice().unwrap().len() - pattern_size,
+            begin: ioslice_len(self.slices.last_slice().unwrap()) - pattern_size,
             len: NonZeroUsize::try_from(pattern_size).unwrap(), // We checked for emptiness above
         };
         self.backrefs
@@ -360,12 +365,12 @@ impl<'this> OwningIovec<'this> {
         // SAFETY: IoSlice and IoSliceMut are ABI compatible with iovec/WSABUf,
         // we have exclusive ownership over ourself + our slices, and we know
         // the backref maps to an owned allocation (made with `push_copy`).
-        let mut target: std::io::IoSliceMut = unsafe { std::mem::transmute(target) };
+        let target: libc::iovec = unsafe { std::mem::transmute(target) };
 
-        assert!(info.begin + src.len() <= target.len());
-        for (idx, byte) in src.iter().copied().enumerate() {
-            target[info.begin + idx] = byte;
-        }
+        assert!(info.begin + src.len() <= target.iov_len);
+        let dst = target.iov_base as *mut u8;
+        let dst = unsafe { dst.add(info.begin) };
+        unsafe { std::ptr::copy(src.as_ptr(), dst, src.len()) };
     }
 
     /// Attempts to join together the last two slices in `self.iovs()`
@@ -373,10 +378,8 @@ impl<'this> OwningIovec<'this> {
     /// the last two slices because we call it whenever a slice is
     /// pushed to `self.iovs`.
     fn optimize(&mut self) {
-        self.slices.maybe_collapse_last_pair(|left, right| {
-            let joined = unsafe { self.arena.try_join(&left, &right) }?;
-            Some(IoSlice::new(joined))
-        });
+        self.slices
+            .maybe_collapse_last_pair(|left, right| unsafe { self.arena.try_join(left, right) });
     }
 }
 
@@ -406,7 +409,7 @@ impl<'life> FromIterator<&'life IoSlice<'life>> for OwningIovec<'life> {
 
 // Exercise simple iovec optimisation
 #[test]
-fn test_happy_optimize() {
+fn test_happy_optimize_miri() {
     use std::io::Write;
 
     let mut iovs: OwningIovec = vec![&b""[..]].into_iter().map(IoSlice::new).collect();
@@ -464,7 +467,7 @@ fn test_happy_optimize() {
 
 // Make sure we don't optimize when there's a gap.
 #[test]
-fn test_no_optimize_gap() {
+fn test_no_optimize_gap_miri() {
     let slices = [IoSlice::new(&b""[..])];
     let mut iovs: OwningIovec = slices.iter().collect();
 
@@ -489,7 +492,7 @@ fn test_no_optimize_gap() {
 // Make sure we *don't* optimize when the arena's cache
 // is reused for another `OwningIovec`.
 #[test]
-fn test_no_optimize_flush() {
+fn test_no_optimize_flush_miri() {
     let mut iovs = OwningIovec::new();
 
     iovs.push_borrowed(b"000");
@@ -511,7 +514,7 @@ fn test_no_optimize_flush() {
 
 // Exercise the `extend` method.
 #[test]
-fn test_extend() {
+fn test_extend_miri() {
     use std::io::Write;
 
     let mut iovs2 = OwningIovec::new();
@@ -542,7 +545,7 @@ fn test_extend() {
 
 // Make sure we can reuse arenas for multiple OwningIovec
 #[test]
-fn test_inherit() {
+fn test_inherit_miri() {
     use std::io::Write;
 
     let mut iovs2 = OwningIovec::new();
@@ -569,7 +572,7 @@ fn test_inherit() {
 
 // Make sure we can steal another iov's arena
 #[test]
-fn test_inherit2() {
+fn test_inherit2_miri() {
     use std::io::Write;
 
     let mut iovs2;
@@ -597,7 +600,7 @@ fn test_inherit2() {
 
 // Make sure we merge a 128-byte `push` with the previous owned slice.
 #[test]
-fn test_medium_write_merge() {
+fn test_medium_write_merge_miri() {
     use std::io::Write;
 
     let mut iovs = OwningIovec::new();
@@ -621,7 +624,7 @@ fn test_medium_write_merge() {
 // Make sure we gracefully handle the case where the final copy doesn't fit in the
 // the previous copy's arena, so can't be merged.
 #[test]
-fn test_medium_write_disjoint() {
+fn test_medium_write_disjoint_miri() {
     use std::io::Write;
 
     let mut iovs = OwningIovec::new_from_slices(vec![IoSlice::new(&[1u8; 3])], None);
@@ -644,7 +647,7 @@ fn test_medium_write_disjoint() {
 
 // `push` should borrow for larger slices.
 #[test]
-fn test_large_write() {
+fn test_large_write_miri() {
     use std::io::Write;
 
     let mut iovs = OwningIovec::new();
@@ -669,7 +672,7 @@ fn test_large_write() {
 
 // Backref happy path
 #[test]
-fn test_backref() {
+fn test_backref_miri() {
     let mut iovs = OwningIovec::new();
 
     // Special safe case: empty patch.
@@ -708,7 +711,7 @@ fn test_backref() {
 
 // Make sure we still do the right thing when slices around the backref are borrowed.
 #[test]
-fn test_backref_borrowed() {
+fn test_backref_borrowed_miri() {
     let mut iovs = OwningIovec::new();
 
     let backref = iovs.register_patch(&[0u8]);
@@ -732,7 +735,7 @@ fn test_backref_borrowed() {
 
 // Make sure we still do the right thing when slices around the backref are borrowed.
 #[test]
-fn test_backref_borrowed2() {
+fn test_backref_borrowed2_miri() {
     let mut iovs = OwningIovec::new();
 
     let backref = iovs.register_patch(&[0u8]);
@@ -756,7 +759,7 @@ fn test_backref_borrowed2() {
 
 // Make sure we still do the right thing when all slices around the backref are borrowed.
 #[test]
-fn test_backref_all_borrowed() {
+fn test_backref_all_borrowed_miri() {
     let mut iovs = OwningIovec::new();
 
     let backref = iovs.register_patch(&[0u8]);

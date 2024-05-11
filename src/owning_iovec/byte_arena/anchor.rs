@@ -36,7 +36,7 @@ impl Chunk {
     }
 
     pub fn as_mut_ptr_range(&mut self) -> std::ops::Range<*mut MaybeUninit<u8>> {
-        unsafe {self.storage.as_mut()}.as_mut_ptr_range()
+        unsafe { self.storage.as_mut() }.as_mut_ptr_range()
     }
 }
 

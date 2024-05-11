@@ -249,6 +249,7 @@ impl std::io::Write for EpochWriter {
 
 // Test the simple happy path: open a log file, write some bytes, commit wayy
 // before the deadline. Close the epoch, find the bytes in there.
+#[cfg(not(miri))]
 #[test]
 fn test_happy_path() {
     use std::io::Write;
@@ -341,6 +342,7 @@ fn test_happy_path() {
 }
 
 // Make sure we can append to a pre-existing log file.
+#[cfg(not(miri))]
 #[test]
 fn test_append() {
     use std::io::Write;
@@ -413,6 +415,7 @@ fn test_append() {
 }
 
 // Tickle the `fsync: true` code
+#[cfg(not(miri))]
 #[test]
 fn test_fsync_path() {
     use std::io::Write;
@@ -483,6 +486,7 @@ fn test_fsync_path() {
 }
 
 // Confirm that `check_deadline()` does the thing.
+#[cfg(not(miri))]
 #[test]
 fn test_late_path() {
     use std::path::Path;
@@ -539,6 +543,7 @@ fn test_late_path() {
 
 // Exercise the lucky path, where the commit is late, but still before the
 // closing process has begun.
+#[cfg(not(miri))]
 #[test]
 fn test_late_commit() {
     use std::io::Write;
@@ -602,6 +607,7 @@ fn test_late_commit() {
 }
 
 // Confirm that `open()` calls are rejected after a preliminary close.
+#[cfg(not(miri))]
 #[test]
 fn test_open_after_close() {
     use std::io::Write;
@@ -689,6 +695,7 @@ fn test_open_after_close() {
 }
 
 // Confirm that `commit` after close fails.
+#[cfg(not(miri))]
 #[test]
 fn test_commit_after_close() {
     use std::io::Write;
@@ -758,6 +765,7 @@ fn test_commit_after_close() {
 
 // Confirm that [`EpochWriter::close()`] after epoch close fails... at the
 // commit step.
+#[cfg(not(miri))]
 #[test]
 fn test_close_after_close() {
     use std::io::Write;

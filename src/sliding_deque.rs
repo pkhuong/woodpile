@@ -293,7 +293,7 @@ where
 }
 
 #[test]
-fn test_vec() {
+fn test_vec_miri() {
     let mut deque = SlidingDeque::<Vec<u32>>::new();
 
     // Initially empty
@@ -333,7 +333,7 @@ fn test_vec() {
 }
 
 #[test]
-fn test_vec_pop_back() {
+fn test_vec_pop_back_miri() {
     let mut deque = SlidingDeque::<Vec<u32>>::new();
 
     deque.push_back(0);
@@ -345,7 +345,7 @@ fn test_vec_pop_back() {
 }
 
 #[test]
-fn test_vec_pop_advance() {
+fn test_vec_pop_advance_miri() {
     let mut deque = SlidingDeque::<Vec<u32>>::new();
 
     deque.push_back(0);
@@ -357,7 +357,7 @@ fn test_vec_pop_advance() {
 }
 
 #[test]
-fn test_vec_advance() {
+fn test_vec_advance_miri() {
     let mut deque = SlidingDeque::<Vec<u32>>::new();
 
     deque.push_back(0);
@@ -369,7 +369,7 @@ fn test_vec_advance() {
 }
 
 #[test]
-fn test_vec_advance2() {
+fn test_vec_advance2_miri() {
     let mut deque = SlidingDeque::<Vec<u32>>::new();
 
     deque.push_back(0);
@@ -380,7 +380,7 @@ fn test_vec_advance2() {
 }
 
 #[test]
-fn test_smallvec() {
+fn test_smallvec_miri() {
     let mut deque = SlidingDeque::<SmallVec<[u8; 8]>>::new();
 
     // Initially empty
@@ -428,7 +428,7 @@ fn test_smallvec() {
 }
 
 #[test]
-fn test_from_vec() {
+fn test_from_vec_miri() {
     let mut deque: SlidingDeque<Vec<u8>> = vec![0u8].into();
 
     assert_eq!(deque.pop_front(), Some(0u8));

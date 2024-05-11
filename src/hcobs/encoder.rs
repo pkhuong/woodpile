@@ -249,7 +249,7 @@ fn encode_with_test_params(bytes: &[u8]) -> Vec<u8> {
 
 // Test some expected input/output pairs
 #[test]
-fn test_simple() {
+fn test_simple_miri() {
     assert_eq!(encode_with_test_params(b""), b"\x00");
     assert_eq!(encode_with_test_params(b"1"), b"\x011");
     assert_eq!(encode_with_test_params(b"12"), b"\x0212");
@@ -345,7 +345,7 @@ fn compare_encode_with_test_params(contiguous: &[u8], split: &[&[u8]]) {
 }
 
 #[test]
-fn test_split() {
+fn test_split_slow() {
     let patterns = &[
         b"123456789abcdef",
         b"12345678\xFE\xFD\xFEabcd",
@@ -353,6 +353,9 @@ fn test_split() {
         b"12345678\xFD\xFD\xFDabcd",
         b"12345678\xFD\xFE\xFDabcd",
     ];
+
+    #[cfg(miri)]
+    let patterns = &patterns[..2];
 
     for pattern in patterns {
         for start in 0..pattern.len() {

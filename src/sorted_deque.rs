@@ -291,7 +291,7 @@ impl SortedDequeItem for TestItem {
 }
 
 #[test]
-fn test_happy_path() {
+fn test_happy_path_miri() {
     let mut deque: SortedDeque<Vec<TestItem>> = Default::default();
 
     assert!(deque.is_empty());
@@ -337,7 +337,7 @@ fn test_happy_path() {
 }
 
 #[test]
-fn test_remove_middle() {
+fn test_remove_middle_miri() {
     let mut deque: SortedDeque<Vec<TestItem>> = Default::default();
 
     let items = [
@@ -393,7 +393,7 @@ fn test_remove_middle() {
 }
 
 #[test]
-fn test_remove_middle_then_pop() {
+fn test_remove_middle_then_pop_miri() {
     let mut deque: SortedDeque<Vec<TestItem>> = Default::default();
 
     let items = [
@@ -442,7 +442,7 @@ fn test_remove_middle_then_pop() {
 }
 
 #[test]
-fn test_key_val() {
+fn test_key_val_miri() {
     type Entry = (u32, Option<()>);
     let mut deque: SortedDeque<smallvec::SmallVec<[Entry; 4]>> = Default::default();
 

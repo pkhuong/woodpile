@@ -58,7 +58,7 @@ const LOG_EXTENSION: &str = "log";
 
 // Check important properties for the constants above.
 #[test]
-fn check_time_relationships() {
+fn check_time_relationships_miri() {
     let epoch_period = Duration::new(EPOCH_PERIOD as i64, 0);
     assert!(epoch_period < EPOCH_WRITE_DURATION);
     assert!(EPOCH_WRITE_DURATION < EPOCH_WRITE_DURATION + EPOCH_WRITE_LEEWAY);
@@ -163,7 +163,7 @@ pub fn construct_epoch_subdirectory(
 }
 
 #[test]
-fn test_epoch_bag_subdirectory() {
+fn test_epoch_bag_subdirectory_miri() {
     use time::macros::datetime;
 
     assert_eq!(
@@ -185,7 +185,7 @@ fn test_epoch_bag_subdirectory() {
 }
 
 #[test]
-fn test_epoch_parsing_happy_path() {
+fn test_epoch_parsing_happy_path_miri() {
     assert_eq!(
         get_epoch_close_time(&PathBuf::from(format!(
             "/tmp/test/2024-04-07/16/01:30-{:x}",
@@ -199,7 +199,7 @@ fn test_epoch_parsing_happy_path() {
 }
 
 #[test]
-fn test_epoch_parsing_failure() {
+fn test_epoch_parsing_failure_miri() {
     use std::ffi::OsStr;
     use std::os::unix::ffi::OsStrExt;
     assert!(format!(
