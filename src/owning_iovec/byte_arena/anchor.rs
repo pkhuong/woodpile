@@ -34,6 +34,10 @@ impl Chunk {
             storage: NonNull::from(Box::leak(storage)),
         }
     }
+
+    pub fn as_mut_ptr_range(&mut self) -> std::ops::Range<*mut MaybeUninit<u8>> {
+        unsafe {self.storage.as_mut()}.as_mut_ptr_range()
+    }
 }
 
 // We don't use the raw pointer until it's time to `Drop`.

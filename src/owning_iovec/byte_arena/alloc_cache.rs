@@ -33,9 +33,8 @@ impl AllocCache {
         let mut storage = Vec::<MaybeUninit<u8>>::with_capacity(capacity);
         // SAFETY: MaybeUninit is always "initialised"
         unsafe { storage.set_len(capacity) };
-        let mut chunk = storage.into_boxed_slice();
+        let mut chunk = Chunk::new(storage.into_boxed_slice());
         let range = chunk.as_mut_ptr_range();
-        let chunk = Chunk::new(chunk);
 
         AllocCache {
             bump: range.start,
