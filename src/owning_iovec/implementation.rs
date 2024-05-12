@@ -137,7 +137,10 @@ impl<'this> OwningIovec<'this> {
     /// Returns a prefix of the owned slices such that none of the
     /// returned slices contain a backpatch.
     #[inline(always)]
-    pub fn stable_prefix(&'this self) -> &'this [IoSlice<'this>] {
+    pub fn stable_prefix<'a>(&'a self) -> &'a [IoSlice<'a>]
+    where
+        'a: 'this,
+    {
         // Unwrap because, if we have an element, its value is `Some`.
         let stop_slice_index = self
             .backrefs
@@ -148,7 +151,10 @@ impl<'this> OwningIovec<'this> {
 
     /// Peeks at the next stable IoSlice
     #[inline(always)]
-    pub fn front(&'this self) -> Option<IoSlice<'this>> {
+    pub fn front<'a>(&'a self) -> Option<IoSlice<'a>>
+    where
+        'a: 'this,
+    {
         self.stable_prefix().first().copied()
     }
 
@@ -190,9 +196,10 @@ impl<'this> OwningIovec<'this> {
     /// ensure that the return value outlives neither `this` nor `self`.
     ///
     /// Returns the stable prefix if some backrefs are still in flight.
-    pub fn iovs(
-        &'this self,
-    ) -> std::result::Result<&'this [IoSlice<'this>], &'this [IoSlice<'this>]> {
+    pub fn iovs<'a>(&'a self) -> std::result::Result<&'a [IoSlice<'a>], &'a [IoSlice<'a>]>
+    where
+        'a: 'this,
+    {
         let ret = self.stable_prefix();
         if self.backrefs.is_empty() {
             Ok(ret)
