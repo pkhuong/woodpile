@@ -1,7 +1,8 @@
 pub mod close;
-pub mod epoch_writer;
+mod epoch_writer;
 pub mod hcobs;
 mod owning_iovec;
+pub mod shard_writer;
 pub mod sliding_deque;
 pub mod sorted_deque;
 mod vouched_time;
