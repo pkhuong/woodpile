@@ -3,6 +3,7 @@
 //! with an incremental interface.
 mod decoder;
 mod encoder;
+pub mod stream_reader;
 
 use std::io::Read;
 use std::io::Result;
@@ -12,6 +13,7 @@ use crate::AnchoredSlice;
 use crate::OwningIovec;
 use decoder::DecoderState;
 use encoder::EncoderState;
+pub use stream_reader::StreamReader;
 
 /// The encoding radix for size headers in the hybrid byte stuffing scheme.
 pub const RADIX: usize = 0xfd;
