@@ -354,6 +354,14 @@ impl AnchoredSlice {
         &self.slice
     }
 
+    /// Swaps `self` with an empty [`AnchoredSlice`] and returns
+    /// the initial `self` slice.
+    pub fn take(&mut self) -> AnchoredSlice {
+        let mut ret: AnchoredSlice = Default::default();
+        std::mem::swap(self, &mut ret);
+        ret
+    }
+
     /// Skips up to the first `count` bytes in the anchored data,
     /// less if `count` is greater than the data's size.
     ///

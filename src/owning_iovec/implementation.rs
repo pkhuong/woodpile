@@ -101,6 +101,14 @@ impl<'this> OwningIovec<'this> {
         }
     }
 
+    /// Replaces `self` with a default-constructued [`OwningIovec`] and
+    /// returns the initial `self`.
+    pub fn take(&mut self) -> Self {
+        let mut ret = Default::default();
+        std::mem::swap(self, &mut ret);
+        ret
+    }
+
     /// Flushes the underlying [`[u8]`] arena's allocation cache.
     pub fn flush_arena_cache(&mut self) {
         self.arena.flush_cache();
