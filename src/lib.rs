@@ -2,6 +2,7 @@ pub mod close;
 mod epoch_writer;
 pub mod hcobs;
 mod owning_iovec;
+pub mod shard_reader;
 pub mod shard_writer;
 pub mod sliding_deque;
 pub mod sorted_deque;
