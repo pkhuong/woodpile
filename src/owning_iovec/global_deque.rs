@@ -52,6 +52,16 @@ impl<'this> GlobalDeque<'this> {
     /// new slice into account.
     pub fn push(&mut self, entry: (IoSlice<'this>, Option<Anchor>)) {
         let (slice, anchor) = entry;
+
+        // This shouldn't happen, but it doesn't hurt to be defensive:
+        // consumers want to assume there are no empty slices.
+        #[cfg(not(test))]
+        if slice.is_empty() {
+            return;
+        }
+
+        assert!(!slice.is_empty());
+
         self.logical_size += slice.len() as u64;
         self.slices.push_back(slice);
         if let Some(anchor) = anchor {
@@ -64,6 +74,13 @@ impl<'this> GlobalDeque<'this> {
     /// Pushes a borrowed slice (guaranteed to outlive the `GlobalDeque`)
     /// at the end of the deque.
     pub fn push_borrowed(&mut self, slice: IoSlice<'this>) {
+        #[cfg(not(test))]
+        if slice.is_empty() {
+            return;
+        }
+
+        assert!(!slice.is_empty());
+
         self.logical_size += slice.len() as u64;
         self.slices.push_back(slice);
 

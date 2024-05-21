@@ -48,16 +48,16 @@ impl OwningIovecBackref {
 /// backpatched after the fact, and it's possible to peek at and consume
 /// the first `IoSlice`s that aren't waiting for a backpatch.
 ///
-/// Internally, owned slices are allocated from an internal arena that
-/// lives at least as long as the [`OwningIovec`] itself.  It's safe
-/// to treat the owned slices as `IoSlice<'this>` because
-/// [`OwningIovec::iovs()`] and [`OwningIovec::front()`] constrain
-/// `&'this self` to live at least as long the [`IoSlice`]s.
+/// Internally, owned slices are allocated from an internal arena
+/// with `Arc` to the backing allocations tracked internally.
 #[derive(Debug, Default, Clone)]
 pub struct OwningIovec<'this> {
     // The `GlobalDeque` manages the mapping between slices and
     // Anchors, but is oblivious to backreferences.  Always bound
     // check *that* before accessing `slices`.
+    //
+    // XXX: we internally guarantee to never push empty slices in
+    // there, and the global deque itself skips empty slices.
     slices: GlobalDeque<'this>,
 
     // We allocate from `arena`, but only to stick values in `iovs`,
@@ -97,7 +97,7 @@ impl<'this> OwningIovec<'this> {
         OwningIovec {
             slices: GlobalDeque::new(slices),
             arena: arena.unwrap_or_default(),
-            backrefs: Default::default(),
+            ..Default::default()
         }
     }
 
@@ -145,10 +145,7 @@ impl<'this> OwningIovec<'this> {
     /// Returns a prefix of the owned slices such that none of the
     /// returned slices contain a backpatch.
     #[inline(always)]
-    pub fn stable_prefix<'a>(&'a self) -> &'a [IoSlice<'a>]
-    where
-        'a: 'this,
-    {
+    pub fn stable_prefix(&self) -> &[IoSlice<'_>] {
         // Unwrap because, if we have an element, its value is `Some`.
         let stop_slice_index = self
             .backrefs
@@ -159,10 +156,7 @@ impl<'this> OwningIovec<'this> {
 
     /// Peeks at the next stable IoSlice
     #[inline(always)]
-    pub fn front<'a>(&'a self) -> Option<IoSlice<'a>>
-    where
-        'a: 'this,
-    {
+    pub fn front(&self) -> Option<IoSlice<'_>> {
         self.stable_prefix().first().copied()
     }
 
@@ -204,10 +198,7 @@ impl<'this> OwningIovec<'this> {
     /// ensure that the return value outlives neither `this` nor `self`.
     ///
     /// Returns the stable prefix if some backrefs are still in flight.
-    pub fn iovs<'a>(&'a self) -> std::result::Result<&'a [IoSlice<'a>], &'a [IoSlice<'a>]>
-    where
-        'a: 'this,
-    {
+    pub fn iovs(&self) -> std::result::Result<&[IoSlice<'_>], &[IoSlice<'_>]> {
         let ret = self.stable_prefix();
         if self.backrefs.is_empty() {
             Ok(ret)
@@ -398,7 +389,7 @@ impl<'this> OwningIovec<'this> {
     }
 }
 
-impl<'life> IntoIterator for &'life OwningIovec<'life> {
+impl<'life> IntoIterator for &'life OwningIovec<'_> {
     type Item = &'life IoSlice<'life>;
     type IntoIter = std::slice::Iter<'life, IoSlice<'life>>;
 
