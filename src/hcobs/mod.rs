@@ -386,7 +386,7 @@ fn smoke_test_miri() {
 
 // make sure we can consume incrementally with the prod interface.
 #[test]
-fn prod_peek_miri() {
+fn prod_peek() {
     let mut encoder: Encoder<'_> = Default::default();
 
     // The initial cache is 4KB, write that much.
