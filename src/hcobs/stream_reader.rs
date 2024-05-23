@@ -1,11 +1,13 @@
 use std::io::IoSlice;
 use std::io::Result;
 use std::num::NonZeroUsize;
+use std::ops::Range;
 
 use super::Decoder;
 use super::STUFF_SEQUENCE;
 use crate::AnchoredSlice;
 use crate::ByteArena;
+use crate::ConsumingIovec;
 use crate::OwningIovec;
 
 const DEFAULT_BLOCK_SIZE: usize = 512 * 1024;
@@ -122,13 +124,13 @@ impl StreamReader {
     pub fn chunk_judge(
         max_record_size: usize,
         limit_offset: Option<u64>,
-    ) -> impl Fn(u64, usize, &[IoSlice<'_>]) -> StreamAction {
+    ) -> impl Fn(Range<u64>, ConsumingIovec<'_>) -> StreamAction {
         let limit_offset = limit_offset.unwrap_or(u64::MAX);
 
-        move |offset, size, _slices| {
-            if size == 0 && offset >= limit_offset {
+        move |range, iovec| {
+            if range.start >= limit_offset {
                 StreamAction::Stop
-            } else if size > max_record_size {
+            } else if iovec.total_size() > max_record_size {
                 StreamAction::SkipRecord
             } else {
                 StreamAction::KeepGoing
@@ -139,10 +141,10 @@ impl StreamReader {
     /// Attempts to decode the next [`STUFF_SEQUENCE`] delimited record
     /// from `reader`.
     ///
-    /// Calls the `record_judge` with the current byte offset and the number
-    /// of bytes decoded so far, and the bytes decoded so far, to know what
-    /// to do: keep attempting to decode the record, skip the record, or
-    /// stop reading (i.e., EOF).
+    /// Calls the `record_judge` with the current byte range in the
+    /// stuffed input for the record the bytes decoded so far in order
+    /// to know what to do: keep attempting to decode the record, skip
+    /// the record, or stop reading (i.e., EOF).
     ///
     /// Returns an IO error if `reader` does, and None on EOF.  Otherwise,
     /// returns a pair of:
@@ -152,52 +154,47 @@ impl StreamReader {
     pub fn next_record_bytes(
         &mut self,
         mut reader: impl std::io::Read,
-        mut record_judge: impl FnMut(u64, usize, &[IoSlice<'_>]) -> StreamAction,
+        mut record_judge: impl FnMut(Range<u64>, ConsumingIovec<'_>) -> StreamAction,
         io_block_size: Option<usize>,
-    ) -> Result<Option<(&[IoSlice<'_>], u64)>> {
+    ) -> Result<Option<(&[IoSlice<'_>], Range<u64>)>> {
         'retry: loop {
             let io_block_size = io_block_size.unwrap_or(DEFAULT_BLOCK_SIZE);
             self.iovec.clear();
             let mut decoder = Decoder::new_from_iovec(self.iovec.take());
             let mut skip_sentinel = true; // true until we hit a non-STUFF_SEQUENCE byte.
-            let mut last_pos = 0;
+            let mut range = 0u64..0u64;
             let mut skip_record = false; // True if we want to drop the record.
             loop {
-                let pos;
                 match self
                     .chunker
                     .pump(decoder.consumer().arena(), &mut reader, io_block_size)?
                 {
                     Chunk::Sentinel(offset) => {
-                        pos = offset;
                         if !skip_sentinel {
                             break;
                         }
 
                         // We skipped a delimiter, so we're reading a fresh record now
                         skip_record = false;
+                        range = offset..offset;
                     }
                     Chunk::Eof => {
                         // We hit EOF and didn't find any data chunk.  Bail.
-                        if last_pos == 0 {
+                        if range.is_empty() {
                             return Ok(None);
                         }
 
                         break;
                     }
                     Chunk::Data((offset, slice)) => {
-                        // Give the judge one last chance if this is the first data chunk.
-                        if last_pos == 0
-                            && record_judge(offset - slice.slice().len() as u64, 0, &[])
-                                == StreamAction::Stop
-                        {
-                            return Ok(None);
+                        // slice is non-empty, so offset > 0,
+                        if range.is_empty() {
+                            let start = offset - (slice.slice().len() as u64);
+                            range = start..start;
                         }
 
-                        // slice is non-empty, so offset > 0,
-                        pos = offset;
+                        range.end = offset;
                         skip_sentinel = false;
-                        last_pos = offset;
 
                         if skip_record {
                             continue;
@@ -209,11 +206,7 @@ impl StreamReader {
                     }
                 }
 
-                match record_judge(
-                    pos,
-                    decoder.consumer().total_size(),
-                    decoder.consumer().stable_prefix(),
-                ) {
+                match record_judge(range.clone(), decoder.consumer()) {
                     StreamAction::KeepGoing => {}
                     StreamAction::SkipRecord => {
                         skip_record = true;
@@ -222,7 +215,7 @@ impl StreamReader {
                 }
             }
 
-            assert_ne!(last_pos, 0);
+            assert_ne!(&range.start, &range.end);
 
             if skip_record {
                 self.iovec = decoder.take_iovec();
@@ -234,10 +227,7 @@ impl StreamReader {
             };
 
             self.iovec = iovec;
-            return Ok(Some((
-                self.iovec.iovs().expect("no backpatch left"),
-                last_pos,
-            )));
+            return Ok(Some((self.iovec.iovs().expect("no backpatch left"), range)));
         }
     }
 }
@@ -274,7 +264,7 @@ fn test_stream_reader_miri() {
         .next_record_bytes(&mut payload, &judge, TEST_BLOCK_SIZE)
         .expect("must succeed")
         .expect("must have data");
-    assert_eq!(pos, 2);
+    assert_eq!(pos, 0..2);
 
     assert_eq!(
         slices
@@ -289,7 +279,7 @@ fn test_stream_reader_miri() {
         .next_record_bytes(&mut payload, &judge, TEST_BLOCK_SIZE)
         .expect("must succeed")
         .expect("must have data");
-    assert_eq!(pos, 7);
+    assert_eq!(pos, 4..7);
 
     assert_eq!(
         slices
@@ -304,7 +294,7 @@ fn test_stream_reader_miri() {
         .next_record_bytes(&mut payload, &judge, TEST_BLOCK_SIZE)
         .expect("must succeed")
         .expect("must have data");
-    assert_eq!(pos, 15);
+    assert_eq!(pos, 11..15);
 
     assert_eq!(
         slices
@@ -319,7 +309,7 @@ fn test_stream_reader_miri() {
         .next_record_bytes(&mut payload, &judge, TEST_BLOCK_SIZE)
         .expect("must succeed")
         .expect("must have data");
-    assert_eq!(pos, 53);
+    assert_eq!(pos, 51..53);
 
     assert_eq!(
         slices
@@ -354,7 +344,7 @@ fn test_stream_reader_partial_miri() {
         .next_record_bytes(&mut payload, &judge, TEST_BLOCK_SIZE)
         .expect("must succeed")
         .expect("must have data");
-    assert_eq!(pos, 2);
+    assert_eq!(pos, 0..2);
     assert_eq!(
         slices
             .iter()
@@ -367,7 +357,7 @@ fn test_stream_reader_partial_miri() {
         .next_record_bytes(&mut payload, &judge, TEST_BLOCK_SIZE)
         .expect("must succeed")
         .expect("must have data");
-    assert_eq!(pos, 7);
+    assert_eq!(pos, 4..7);
 
     assert_eq!(
         slices
@@ -392,7 +382,7 @@ fn test_stream_reader_partial_miri() {
         .next_record_bytes(&mut payload, &judge, TEST_BLOCK_SIZE)
         .expect("must succeed")
         .expect("must have data");
-    assert_eq!(pos, 2);
+    assert_eq!(pos, 0..2);
     assert_eq!(
         slices
             .iter()
@@ -418,7 +408,7 @@ fn test_stream_reader_partial_miri() {
         .next_record_bytes(&mut payload, &judge, TEST_BLOCK_SIZE)
         .expect("must succeed")
         .expect("must have data");
-    assert_eq!(pos, 2);
+    assert_eq!(pos, 0..2);
     assert_eq!(
         slices
             .iter()
@@ -484,7 +474,7 @@ fn test_stream_reader_many_stuff_miri() {
         .expect("must have data");
 
     assert_eq!(slices.len(), 0);
-    assert_eq!(pos, 5);
+    assert_eq!(pos, 4..5);
 }
 
 // Only one message should decode fine.
@@ -502,7 +492,7 @@ fn test_stream_reader_one_message_miri() {
         )
         .expect("must succeed")
         .expect("must have data");
-    assert_eq!(pos, 2);
+    assert_eq!(pos, 0..2);
     assert_eq!(
         slices
             .iter()
@@ -576,7 +566,7 @@ fn test_stream_reader_error_miri() {
         )
         .expect("must succeed")
         .expect("must have data");
-    assert_eq!(pos, 2);
+    assert_eq!(pos, 0..2);
     assert_eq!(
         slices
             .iter()

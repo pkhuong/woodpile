@@ -5,6 +5,7 @@ use crate::hcobs::StreamReader;
 use std::fs::File;
 use std::io::IoSlice;
 use std::io::Result;
+use std::ops::Range;
 
 /// The hash key used to generate the records' Blake3 checksum.
 ///
@@ -103,11 +104,11 @@ impl<R: std::io::Read> ShardReader<R> {
     /// does not exceed `max_record_size`, and the Blake3 checksum matches), or returns
     /// `Ok(None)` if we reached the end of the file or any new record would start at
     /// or after `max_file_offset`.
-    pub fn next_record(&mut self) -> Result<Option<(Record, u64)>> {
+    pub fn next_record(&mut self) -> Result<Option<(Record, Range<u64>)>> {
         use std::io::Read;
         let judge = StreamReader::chunk_judge(self.max_record_size, Some(self.max_file_offset));
         loop {
-            let Some((slices, offset)) =
+            let Some((slices, range)) =
                 self.stream_reader
                     .next_record_bytes(&mut self.file, &judge, None)?
             else {
@@ -163,7 +164,7 @@ impl<R: std::io::Read> ShardReader<R> {
                     payload: dst.into_boxed_slice(),
                 };
 
-                return Ok(Some((ret, offset)));
+                return Ok(Some((ret, range)));
             }
         }
     }
@@ -175,9 +176,9 @@ impl<R: std::io::Read> ShardReader<R> {
 }
 
 impl<R: std::io::Read> std::iter::Iterator for ShardReader<R> {
-    type Item = Result<(Record, u64)>;
+    type Item = Result<(Record, Range<u64>)>;
 
-    fn next(&mut self) -> Option<Result<(Record, u64)>> {
+    fn next(&mut self) -> Option<Result<(Record, Range<u64>)>> {
         self.next_record().transpose()
     }
 }
@@ -236,7 +237,7 @@ fn test_shard_reader() {
                     ],
                     payload: vec![49, 50, 51, 52].into_boxed_slice()
                 },
-                71
+                2..71
             ),
             (
                 Record {
@@ -248,7 +249,7 @@ fn test_shard_reader() {
                     ],
                     payload: vec![97, 98, 99, 100].into_boxed_slice()
                 },
-                144
+                75..144
             )
         ]
     );
