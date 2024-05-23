@@ -303,8 +303,9 @@ fn test_shard_reader_large() {
 
 // Flip each bit.  We should always drop a message, and never
 // accept extra messages.
+#[cfg(not(miri))] // Too slow with miri; run it manually if needed.
 #[test]
-fn test_shard_reader_corrupt() {
+fn test_shard_reader_corrupt_slow() {
     use time::macros::datetime;
 
     // See shard_writer.rs's `test_shard_writer_append`

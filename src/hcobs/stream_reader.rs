@@ -250,7 +250,7 @@ impl StreamReader {
 
 // Check that we can read a couple COBS records.
 #[test]
-fn test_stream_reader() {
+fn test_stream_reader_miri() {
     let payload: &[&[u8]] = &[
         b"\x01a", // Missing stuff sequence here
         &STUFF_SEQUENCE,
@@ -350,7 +350,7 @@ fn test_stream_reader() {
 
 // Confirm that we can stop reading after an offset.
 #[test]
-fn test_stream_reader_partial() {
+fn test_stream_reader_partial_miri() {
     let contents: &[&[u8]] = &[b"\x01a", &STUFF_SEQUENCE, b"\x02bc"];
     let mut payload = &contents.concat()[..];
 
@@ -443,7 +443,7 @@ fn test_stream_reader_partial() {
 
 // Empty file should direct return EOF
 #[test]
-fn test_stream_reader_empty() {
+fn test_stream_reader_empty_miri() {
     let mut payload: &[u8] = &[];
 
     let mut reader = StreamReader::new();
@@ -459,7 +459,7 @@ fn test_stream_reader_empty() {
 
 // Only a stuff sequence -> return EOF
 #[test]
-fn test_stream_reader_stuff_only() {
+fn test_stream_reader_stuff_only_miri() {
     let mut payload = &STUFF_SEQUENCE[..];
 
     let mut reader = StreamReader::new();
@@ -475,7 +475,7 @@ fn test_stream_reader_stuff_only() {
 
 // Couple stuff sequence -> data, should decode fine.
 #[test]
-fn test_stream_reader_many_stuff() {
+fn test_stream_reader_many_stuff_miri() {
     let payload: &[&[u8]] = &[&STUFF_SEQUENCE, &STUFF_SEQUENCE, b"\x00"];
 
     let mut payload = &payload.concat()[..];
@@ -495,7 +495,7 @@ fn test_stream_reader_many_stuff() {
 
 // Only one message should decode fine.
 #[test]
-fn test_stream_reader_one_message() {
+fn test_stream_reader_one_message_miri() {
     let mut payload = &b"\x01a"[..];
 
     let mut reader = StreamReader::new();
@@ -530,7 +530,7 @@ fn test_stream_reader_one_message() {
 
 // Rruncated messages should be skipped.
 #[test]
-fn test_stream_reader_truncated_message() {
+fn test_stream_reader_truncated_message_miri() {
     // Two truncated messages, one terminated by a stuff sequence,
     // another by EOF.
     let mut payload = &b"\x02a\xFE\xFD\x05b"[..];
@@ -550,7 +550,7 @@ fn test_stream_reader_truncated_message() {
 // We should gracefully bubble up an error in the middle of a
 // record.
 #[test]
-fn test_stream_reader_error() {
+fn test_stream_reader_error_miri() {
     struct Reader {
         payload: &'static [u8],
     }
