@@ -101,7 +101,7 @@ impl ShardWriter {
     pub fn write(&mut self, buf: &[u8]) -> Result<usize> {
         self.write_impl(buf);
         // If we're definitely past the min write size, try to flush.
-        if self.encoder.iovec().total_size() >= 2 * MIN_WRITE_SIZE {
+        if self.encoder.consumer().total_size() >= 2 * MIN_WRITE_SIZE {
             self.flush_impl(MIN_WRITE_SIZE)?;
         }
 
@@ -124,7 +124,8 @@ impl ShardWriter {
     /// Flushes encoded data to the shard file if we have at least
     /// `min_write` bytes to flush.
     fn flush_impl(&mut self, min_write: usize) -> Result<()> {
-        let to_write = self.encoder.iovec().stable_prefix();
+        let consumer = self.encoder.consumer();
+        let to_write = consumer.stable_prefix();
 
         // XXX: round down to a multiple of `MIN_WRITE_SIZE`?
         let byte_count: usize = to_write.iter().map(|x| x.len()).sum();
@@ -139,7 +140,7 @@ impl ShardWriter {
                 Err(e) => return Err(e),
             }
         };
-        self.encoder.iovec().consumer().advance_by_bytes(written);
+        self.encoder.consumer().advance_by_bytes(written);
         if written == 0 && byte_count > 0 {
             Err(std::io::Error::new(
                 std::io::ErrorKind::WriteZero,

@@ -10,6 +10,7 @@ use std::io::Result;
 use std::num::NonZeroUsize;
 
 use crate::AnchoredSlice;
+use crate::ConsumingIovec;
 use crate::OwningIovec;
 use decoder::DecoderState;
 use encoder::EncoderState;
@@ -82,12 +83,12 @@ impl<'this> Encoder<'this> {
         }
     }
 
-    /// Returns the underlying [`OwningIovec`]
+    /// Returns a consuming wrapper for the underlying [`OwningIovec`]
     ///
     /// Useful to consume incrementally from the output.
     #[must_use]
-    pub fn iovec(&mut self) -> &mut OwningIovec<'this> {
-        &mut self.iovec
+    pub fn consumer(&mut self) -> ConsumingIovec<'_> {
+        self.iovec.consumer()
     }
 
     /// Appends `data` to the bytes to encode.
@@ -171,12 +172,16 @@ impl<'this> Decoder<'this> {
         }
     }
 
-    /// Returns the underlying [`OwningIovec`].
+    /// Returns a consumer for the underlying [`OwningIovec`].
     ///
     /// Useful to consume incrementally from the output.
     #[must_use]
-    pub fn iovec(&mut self) -> &mut OwningIovec<'this> {
-        &mut self.iovec
+    pub fn consumer(&mut self) -> ConsumingIovec<'_> {
+        self.iovec.consumer()
+    }
+
+    pub fn take_iovec(self) -> OwningIovec<'this> {
+        self.iovec
     }
 
     /// Appends `data` to the bytes to decode.
@@ -269,7 +274,7 @@ impl Read for BadReader {
 fn smoke_test_miri() {
     let mut encoder: Encoder<'_> = Default::default();
 
-    encoder.iovec().arena().ensure_capacity(10);
+    encoder.consumer().arena().ensure_capacity(10);
     encoder.encode(b"123");
     encoder.encode_copy(b"456");
     assert!(encoder
@@ -319,7 +324,7 @@ fn smoke_test_miri() {
 
         // Can peek
         assert_eq!(
-            decoder.iovec().flatten().expect("no backpatch left"),
+            decoder.consumer().flatten().expect("no backpatch left"),
             b"123456789789"
         );
 
@@ -339,7 +344,7 @@ fn smoke_test_miri() {
         }
 
         assert_eq!(
-            decoder.iovec().flatten().expect("no backpatch left"),
+            decoder.consumer().flatten().expect("no backpatch left"),
             b"123456789789"
         );
 
@@ -367,7 +372,7 @@ fn smoke_test_miri() {
         }
 
         assert_eq!(
-            decoder.iovec().flatten().expect("no backpatch left"),
+            decoder.consumer().flatten().expect("no backpatch left"),
             b"123456789789"
         );
 
@@ -398,11 +403,11 @@ fn prod_peek_miri() {
     // 252 zeros, then 4096 - 252 = 3844 zeros.
     let expected = [header, &zeros[..252], second_header, &zeros[..3844]].concat();
 
-    assert_eq!(encoder.iovec().stable_prefix().len(), 1);
+    assert_eq!(encoder.consumer().stable_prefix().len(), 1);
 
     assert_eq!(
         &encoder
-            .iovec()
+            .consumer()
             .stable_prefix()
             .iter()
             .flat_map(|x| -> &[u8] { x })
@@ -413,7 +418,7 @@ fn prod_peek_miri() {
         &expected[0..4095]
     );
 
-    assert_eq!(encoder.iovec().consumer().consume(1), 1);
+    assert_eq!(encoder.consumer().consume(1), 1);
 
     let iovec = encoder.finish();
     assert_eq!(
@@ -464,10 +469,11 @@ fn prod_encode_streaming(repeat: usize) {
 
     for _ in 0..repeat {
         encoder.encode_copy(&payload);
-        let prefix = encoder.iovec().stable_prefix();
+        let consumer = encoder.consumer();
+        let prefix = consumer.stable_prefix();
         if !prefix.is_empty() {
             let len = prefix.len();
-            encoder.iovec().consumer().consume(len);
+            assert_eq!(encoder.consumer().consume(len), len);
         }
     }
 
@@ -499,15 +505,17 @@ fn prod_decode_streaming(repeat: usize) {
 
     for _ in 0..repeat {
         encoder.encode(&payload);
-        let prefix = encoder.iovec().stable_prefix();
+        let mut consumer = encoder.consumer();
+        let prefix = consumer.stable_prefix();
         for slice in prefix {
             decoder.decode_copy(slice).expect("ok");
         }
 
         let len = prefix.len();
-        encoder.iovec().consumer().consume(len);
+        assert_eq!(consumer.consume(prefix.len()), len);
 
-        let prefix = decoder.iovec().stable_prefix();
+        let mut consumer = decoder.consumer();
+        let prefix = consumer.stable_prefix();
         for slice in prefix {
             let slice: &[u8] = slice;
             decoded_size += slice.len();
@@ -515,8 +523,9 @@ fn prod_decode_streaming(repeat: usize) {
                 assert_eq!(*byte, 1u8);
             }
         }
+
         let len = prefix.len();
-        decoder.iovec().consumer().consume(len);
+        assert_eq!(consumer.consume(prefix.len()), len);
     }
 
     assert!(crate::ByteArena::num_live_chunks() <= 3);

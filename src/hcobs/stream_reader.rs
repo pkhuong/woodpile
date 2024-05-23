@@ -5,6 +5,7 @@ use std::num::NonZeroUsize;
 use super::Decoder;
 use super::STUFF_SEQUENCE;
 use crate::AnchoredSlice;
+use crate::ByteArena;
 use crate::OwningIovec;
 
 const DEFAULT_BLOCK_SIZE: usize = 512 * 1024;
@@ -50,7 +51,7 @@ enum Chunk {
 impl StreamChunker {
     pub fn pump(
         &mut self,
-        iovec: &mut OwningIovec<'_>,
+        arena: &mut ByteArena,
         mut reader: impl std::io::Read,
         io_block_size: usize,
     ) -> Result<Chunk> {
@@ -62,10 +63,7 @@ impl StreamChunker {
             let mut slice = buf.slice();
             let concat = (&mut slice).chain(&mut reader);
 
-            let buf = iovec
-                .consumer()
-                .arena()
-                .read_n(concat, io_block_size, NonZeroUsize::MAX)?;
+            let buf = arena.read_n(concat, io_block_size, NonZeroUsize::MAX)?;
             if buf.slice().len() == initial_length {
                 // No progress, must be Eof.
                 if buf.slice().is_empty() {
@@ -174,7 +172,7 @@ impl StreamReader {
                 let pos;
                 match self
                     .chunker
-                    .pump(decoder.iovec(), &mut reader, io_block_size)?
+                    .pump(decoder.consumer().arena(), &mut reader, io_block_size)?
                 {
                     Chunk::Sentinel(offset) => {
                         pos = offset;
@@ -219,8 +217,8 @@ impl StreamReader {
 
                 match record_judge(
                     pos,
-                    decoder.iovec().total_size(),
-                    decoder.iovec().stable_prefix(),
+                    decoder.consumer().total_size(),
+                    decoder.consumer().stable_prefix(),
                 ) {
                     StreamAction::KeepGoing => {}
                     StreamAction::SkipRecord => {
@@ -233,7 +231,7 @@ impl StreamReader {
             assert_ne!(last_pos, 0);
 
             if skip_record {
-                self.iovec = decoder.iovec().take();
+                self.iovec = decoder.take_iovec();
                 continue 'retry;
             }
 
