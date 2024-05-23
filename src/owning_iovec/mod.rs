@@ -4,5 +4,6 @@ mod implementation;
 
 pub use byte_arena::AnchoredSlice;
 pub use byte_arena::ByteArena;
+pub use implementation::ConsumingIovec;
 pub use implementation::OwningIovec;
 pub use implementation::OwningIovecBackref;

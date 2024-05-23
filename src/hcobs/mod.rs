@@ -127,7 +127,7 @@ impl<'this> Encoder<'this> {
         count: usize,
         attempts: NonZeroUsize,
     ) -> Result<usize> {
-        let anchored_slice = self.iovec.arena_read_n(reader, count, attempts)?;
+        let anchored_slice = self.iovec.arena().read_n(reader, count, attempts)?;
         assert!(anchored_slice.slice().len() <= count);
         let ret = anchored_slice.slice().len();
 
@@ -219,7 +219,7 @@ impl<'this> Decoder<'this> {
         count: usize,
         attempts: NonZeroUsize,
     ) -> Result<usize> {
-        let anchored_slice = self.iovec.arena_read_n(reader, count, attempts)?;
+        let anchored_slice = self.iovec.arena().read_n(reader, count, attempts)?;
         assert!(anchored_slice.slice().len() <= count);
         let len = anchored_slice.slice().len();
 
@@ -269,7 +269,7 @@ impl Read for BadReader {
 fn smoke_test_miri() {
     let mut encoder: Encoder<'_> = Default::default();
 
-    encoder.iovec().ensure_arena_capacity(10);
+    encoder.iovec().arena().ensure_capacity(10);
     encoder.encode(b"123");
     encoder.encode_copy(b"456");
     assert!(encoder
@@ -413,7 +413,7 @@ fn prod_peek_miri() {
         &expected[0..4095]
     );
 
-    assert_eq!(encoder.iovec().consume(1), 1);
+    assert_eq!(encoder.iovec().consumer().consume(1), 1);
 
     let iovec = encoder.finish();
     assert_eq!(
@@ -467,7 +467,7 @@ fn prod_encode_streaming(repeat: usize) {
         let prefix = encoder.iovec().stable_prefix();
         if !prefix.is_empty() {
             let len = prefix.len();
-            encoder.iovec().consume(len);
+            encoder.iovec().consumer().consume(len);
         }
     }
 
@@ -505,7 +505,7 @@ fn prod_decode_streaming(repeat: usize) {
         }
 
         let len = prefix.len();
-        encoder.iovec().consume(len);
+        encoder.iovec().consumer().consume(len);
 
         let prefix = decoder.iovec().stable_prefix();
         for slice in prefix {
@@ -516,7 +516,7 @@ fn prod_decode_streaming(repeat: usize) {
             }
         }
         let len = prefix.len();
-        decoder.iovec().consume(len);
+        decoder.iovec().consumer().consume(len);
     }
 
     assert!(crate::ByteArena::num_live_chunks() <= 3);

@@ -67,6 +67,51 @@ pub struct OwningIovec<'this> {
     backrefs: SortedDeque<SmallVec<[Backref; 4]>>, // Pending backrefs
 }
 
+/// Conceptually, [`ConsumingIovec`] is a mutable reference to an
+/// [`OwningIovec`] that only exposes consuming operations (i.e.,
+/// can't put slices in).  It can also be derefed as a const ref
+/// to [`OwningIovec`], for read-only methods.
+///
+/// This dataflow means we only want covariance (like regular references).
+#[derive(Debug)]
+#[repr(transparent)]
+// We do not need a PhantomData<OwningIovec<'a>> because `ConsumingIovec`
+// does not own the `OwningIovec` (and further `OwningIovec` does not
+// look at the 'life-slices' contents when it drops).
+// (https://github.com/rust-lang/rfcs/blob/master/text/0769-sound-generic-drop.md#phantom-data).
+//
+// NonNull is safe because we do want covariance in 'a.
+pub struct ConsumingIovec<'a>(std::ptr::NonNull<OwningIovec<'a>>);
+
+impl<'a> ConsumingIovec<'a> {
+    /// ConsumingIovec does not implement Clone, and iovec accepts a
+    /// mutable reference, so this internal pointer must be an
+    /// exclusive reference to the pointee.  It's safe to convert back
+    /// to &mut, because this wrapper acts like &mut &mut.
+    #[inline(always)]
+    fn iovec(&'a mut self) -> &'a mut OwningIovec<'a> {
+        unsafe { self.0.as_mut() }
+    }
+}
+
+impl<'a> std::convert::From<&'a mut OwningIovec<'_>> for ConsumingIovec<'a> {
+    #[inline(always)]
+    fn from(iovec: &'a mut OwningIovec<'_>) -> ConsumingIovec<'a> {
+        ConsumingIovec(iovec.into())
+    }
+}
+
+// No DerefMut because the whole point of `ConsumingIovec` is to
+// only allow the consuming subset of mutable methods.
+impl<'a> std::ops::Deref for ConsumingIovec<'a> {
+    type Target = OwningIovec<'a>;
+
+    #[inline(always)]
+    fn deref(&self) -> &OwningIovec<'a> {
+        unsafe { self.0.as_ref() }
+    }
+}
+
 /// Always copy when the source is at most this long.
 const SMALL_COPY: usize = 64;
 
@@ -101,132 +146,22 @@ impl<'this> OwningIovec<'this> {
         }
     }
 
+    #[inline(always)]
+    pub fn arena(&mut self) -> &mut ByteArena {
+        &mut self.arena
+    }
+
+    #[inline(always)]
+    pub fn consumer(&mut self) -> ConsumingIovec<'_> {
+        self.into()
+    }
+
     /// Replaces `self` with a default-constructued [`OwningIovec`] and
     /// returns the initial `self`.
     pub fn take(&mut self) -> Self {
         let mut ret = Default::default();
         std::mem::swap(self, &mut ret);
         ret
-    }
-
-    /// Flushes the underlying [`[u8]`] arena's allocation cache.
-    pub fn flush_arena_cache(&mut self) {
-        self.arena.flush_cache();
-    }
-
-    /// Ensures we have room for `len` contiguous bytes in the
-    /// underlying [`[u8]`] arena's allocation cache.
-    pub fn ensure_arena_capacity(&mut self, len: usize) {
-        self.arena.ensure_capacity(len);
-    }
-
-    pub fn arena_read_n(
-        &mut self,
-        src: impl Read,
-        count: usize,
-        max_attempts: NonZeroUsize,
-    ) -> std::io::Result<AnchoredSlice> {
-        self.arena.read_n(src, count, max_attempts)
-    }
-
-    /// Returns the underlying arena.
-    pub fn take_arena(&mut self) -> ByteArena {
-        let mut ret = ByteArena::new();
-
-        std::mem::swap(&mut ret, &mut self.arena);
-        ret
-    }
-
-    pub fn swap_arena(&mut self, mut arena: ByteArena) -> ByteArena {
-        std::mem::swap(&mut arena, &mut self.arena);
-        arena
-    }
-
-    /// Returns a prefix of the owned slices such that none of the
-    /// returned slices contain a backpatch.
-    #[inline(always)]
-    pub fn stable_prefix(&self) -> &[IoSlice<'_>] {
-        // Unwrap because, if we have an element, its value is `Some`.
-        let stop_slice_index = self
-            .backrefs
-            .first()
-            .map(|backref| backref.1.unwrap().slice_index);
-        self.slices.get_logical_prefix(stop_slice_index)
-    }
-
-    /// Peeks at the next stable IoSlice
-    #[inline(always)]
-    pub fn front(&self) -> Option<IoSlice<'_>> {
-        self.stable_prefix().first().copied()
-    }
-
-    /// Pops the first IoSlice.  Panics if the [`OwningIovec`] has no stable prefix.
-    pub fn pop_front(&mut self) {
-        let consumed = self.consume(1);
-        assert_eq!(consumed, 1);
-    }
-
-    /// Pops up to the next `count` `IoSlice`s returned by [`Self::stable_prefix`].
-    ///
-    /// Returns the number of slices consumed.
-    #[inline(always)]
-    pub fn consume(&mut self, count: usize) -> usize {
-        self.slices.consume(count.min(self.stable_prefix().len()))
-    }
-
-    /// Pops up to the next `count` bytes in the slices returned by [`Self::stable_prefix`].
-    ///
-    /// Returns the number of bytes consumed.
-    #[inline(always)]
-    pub fn advance_by_bytes(&mut self, count: usize) -> usize {
-        let mut stable_count = 0;
-        for slice in self.stable_prefix() {
-            let size = slice.len();
-            if size >= count - stable_count {
-                stable_count = count;
-                break;
-            }
-
-            stable_count += size;
-        }
-
-        self.slices.consume_by_bytes(stable_count)
-    }
-
-    /// The [`OwningIovec::iovs`] method is the only way to borrow
-    /// [`IoSlice`]s from an [`OwningIovec`]. The lifetime constraints
-    /// ensure that the return value outlives neither `this` nor `self`.
-    ///
-    /// Returns the stable prefix if some backrefs are still in flight.
-    pub fn iovs(&self) -> std::result::Result<&[IoSlice<'_>], &[IoSlice<'_>]> {
-        let ret = self.stable_prefix();
-        if self.backrefs.is_empty() {
-            Ok(ret)
-        } else {
-            Err(ret)
-        }
-    }
-
-    /// Returns the number of slices in the [`OwningIovec`].
-    ///
-    /// This includes slices that are still waiting for a backpatch.
-    #[inline(always)]
-    pub fn len(&self) -> usize {
-        self.slices.num_slices()
-    }
-
-    /// Determines whether the [`OwningIovec`] contains 0 slices.
-    #[inline(always)]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Returns the total number of bytes in `self.iovs`.
-    ///
-    /// This includes slices that are still waiting for a backpatch.
-    #[inline(always)]
-    pub fn total_size(&self) -> usize {
-        self.slices.total_size()
     }
 
     /// Pushes `slice` to the internal vector of [`IoSlice`]s.
@@ -293,30 +228,6 @@ impl<'this> OwningIovec<'this> {
 
     pub fn push_anchor(&mut self, anchor: Anchor) {
         self.slices.push_anchor(anchor);
-    }
-
-    /// Returns the contents of this iovec as a single [`Vec<u8>`].
-    ///
-    /// Returns the stable contents as an error if there is any backreference in flight.
-    #[inline(always)]
-    pub fn flatten(&self) -> std::result::Result<Vec<u8>, Vec<u8>> {
-        self.flatten_into(Vec::with_capacity(self.total_size()))
-    }
-
-    /// Appends the contents of this iovec so `dst`.
-    ///
-    /// Returns the stable contents as an error if there is any backreference in flight.
-    pub fn flatten_into(&self, mut dst: Vec<u8>) -> std::result::Result<Vec<u8>, Vec<u8>> {
-        dst.reserve(self.total_size());
-        for iov in self.stable_prefix() {
-            dst.extend_from_slice(iov);
-        }
-
-        if self.backrefs.is_empty() {
-            Ok(dst)
-        } else {
-            Err(dst)
-        }
     }
 
     /// Registers a backreference at the current write location, with
@@ -389,6 +300,167 @@ impl<'this> OwningIovec<'this> {
     }
 }
 
+// pure read methods
+impl OwningIovec<'_> {
+    #[inline(always)]
+    pub fn has_pending_backrefs(&self) -> bool {
+        !self.backrefs.is_empty()
+    }
+
+    /// Returns a prefix of the owned slices such that none of the
+    /// returned slices contain a backpatch.
+    #[inline(always)]
+    pub fn stable_prefix(&self) -> &[IoSlice<'_>] {
+        // Unwrap because, if we have an element, its value is `Some`.
+        let stop_slice_index = self
+            .backrefs
+            .first()
+            .map(|backref| backref.1.unwrap().slice_index);
+        self.slices.get_logical_prefix(stop_slice_index)
+    }
+
+    /// Peeks at the next stable IoSlice
+    #[inline(always)]
+    pub fn front(&self) -> Option<IoSlice<'_>> {
+        self.stable_prefix().first().copied()
+    }
+
+    /// The [`OwningIovec::iovs`] method is the only way to borrow
+    /// [`IoSlice`]s from an [`OwningIovec`]. The lifetime constraints
+    /// ensure that the return value outlives neither `this` nor `self`.
+    ///
+    /// Returns the stable prefix if some backrefs are still in flight.
+    #[inline(always)]
+    pub fn iovs(&self) -> std::result::Result<&[IoSlice<'_>], &[IoSlice<'_>]> {
+        let ret = self.stable_prefix();
+        if self.has_pending_backrefs() {
+            Err(ret)
+        } else {
+            Ok(ret)
+        }
+    }
+
+    /// Returns the number of slices in the [`OwningIovec`].
+    ///
+    /// This includes slices that are still waiting for a backpatch.
+    #[inline(always)]
+    pub fn len(&self) -> usize {
+        self.slices.num_slices()
+    }
+
+    /// Determines whether the [`OwningIovec`] contains 0 slices.
+    #[inline(always)]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Returns the total number of bytes in `self.iovs`.
+    ///
+    /// This includes slices that are still waiting for a backpatch.
+    #[inline(always)]
+    pub fn total_size(&self) -> usize {
+        self.slices.total_size()
+    }
+
+    /// Returns the contents of this iovec as a single [`Vec<u8>`].
+    ///
+    /// Returns the stable contents as an error if there is any backreference in flight.
+    #[inline(always)]
+    pub fn flatten(&self) -> std::result::Result<Vec<u8>, Vec<u8>> {
+        self.flatten_into(Vec::with_capacity(self.total_size()))
+    }
+
+    /// Appends the contents of this iovec so `dst`.
+    ///
+    /// Returns the stable contents as an error if there is any backreference in flight.
+    pub fn flatten_into(&self, mut dst: Vec<u8>) -> std::result::Result<Vec<u8>, Vec<u8>> {
+        dst.reserve(self.total_size());
+        for iov in self.stable_prefix() {
+            dst.extend_from_slice(iov);
+        }
+
+        if self.has_pending_backrefs() {
+            Err(dst)
+        } else {
+            Ok(dst)
+        }
+    }
+}
+
+impl<'a> ConsumingIovec<'a> {
+    /// Returns a reference to the underlying arena.
+    #[inline(always)]
+    pub fn arena(&'a mut self) -> &'a mut ByteArena {
+        &mut self.iovec().arena
+    }
+
+    /// Flushes the underlying [`[u8]`] arena's allocation cache.
+    #[inline(always)]
+    pub fn flush_arena_cache(&'a mut self) {
+        self.arena().flush_cache()
+    }
+
+    /// Ensures we have room for `len` contiguous bytes in the
+    /// underlying [`[u8]`] arena's allocation cache.
+    #[inline(always)]
+    pub fn ensure_arena_capacity(&'a mut self, len: usize) {
+        self.arena().ensure_capacity(len)
+    }
+
+    #[inline(always)]
+    pub fn arena_read_n(
+        &'a mut self,
+        src: impl Read,
+        count: usize,
+        max_attempts: NonZeroUsize,
+    ) -> std::io::Result<AnchoredSlice> {
+        self.arena().read_n(src, count, max_attempts)
+    }
+
+    /// Returns the underlying arena.
+    pub fn take_arena(&'a mut self) -> ByteArena {
+        self.swap_arena(Default::default())
+    }
+
+    pub fn swap_arena(&'a mut self, mut arena: ByteArena) -> ByteArena {
+        std::mem::swap(&mut arena, self.arena());
+        arena
+    }
+
+    /// Pops the first IoSlice.  Panics if the [`OwningIovec`] has no stable prefix.
+    pub fn pop_front(&'a mut self) {
+        let consumed = self.consume(1);
+        assert_eq!(consumed, 1);
+    }
+
+    /// Pops up to the next `count` `IoSlice`s returned by [`Self::stable_prefix`].
+    ///
+    /// Returns the number of slices consumed.
+    #[inline(always)]
+    pub fn consume(&'a mut self, count: usize) -> usize {
+        let num_slices = self.stable_prefix().len();
+        self.iovec().slices.consume(count.min(num_slices))
+    }
+
+    /// Pops up to the next `count` bytes in the slices returned by [`Self::stable_prefix`].
+    ///
+    /// Returns the number of bytes consumed.
+    pub fn advance_by_bytes(&'a mut self, count: usize) -> usize {
+        let mut stable_count = 0;
+        for slice in self.stable_prefix() {
+            let size = slice.len();
+            if size >= count - stable_count {
+                stable_count = count;
+                break;
+            }
+
+            stable_count += size;
+        }
+
+        self.iovec().slices.consume_by_bytes(stable_count)
+    }
+}
+
 impl<'life> IntoIterator for &'life OwningIovec<'_> {
     type Item = &'life IoSlice<'life>;
     type IntoIter = std::slice::Iter<'life, IoSlice<'life>>;
@@ -430,9 +502,9 @@ fn test_happy_optimize_miri() {
     iovs.push_borrowed(b"000");
 
     // Copy a bunch of slices that can be concatenated in place.
-    iovs.ensure_arena_capacity(10);
+    iovs.arena().ensure_capacity(10);
     iovs.push_copy(b"123");
-    iovs.ensure_arena_capacity(7);
+    iovs.arena().ensure_capacity(7);
     iovs.push_copy(b"456");
     iovs.push(b"7");
     iovs.push_borrowed(b"aaa");
@@ -455,19 +527,19 @@ fn test_happy_optimize_miri() {
     assert_eq!(dst, b"0001234567aaa");
 
     // now consume 4 bytes.
-    assert_eq!(iovs.advance_by_bytes(4), 4);
+    assert_eq!(iovs.consumer().advance_by_bytes(4), 4);
     assert_eq!(iovs.len(), 2);
     assert_eq!(iovs.total_size(), 9);
 
     assert_eq!(iovs.flatten().unwrap(), b"234567aaa");
 
-    assert_eq!(iovs.advance_by_bytes(100), 9);
+    assert_eq!(iovs.consumer().advance_by_bytes(100), 9);
     assert!(iovs.is_empty());
     assert_eq!(iovs.len(), 0);
     assert_eq!(iovs.total_size(), 0);
     assert_eq!(iovs.flatten().unwrap(), b"");
 
-    assert_eq!(iovs.advance_by_bytes(100), 0);
+    assert_eq!(iovs.consumer().advance_by_bytes(100), 0);
     assert_eq!(iovs.flatten().unwrap(), b"");
 }
 
@@ -485,9 +557,9 @@ fn test_no_optimize_gap_miri() {
     iovs.push_borrowed(b"aaa");
 
     // Force a realloc, make sure this doesn't do weird stuff.
-    let mut arena = iovs.take_arena();
+    let mut arena = iovs.consumer().take_arena();
     arena.ensure_capacity(10000);
-    iovs.swap_arena(arena);
+    iovs.consumer().swap_arena(arena);
 
     assert_eq!(iovs.len(), 4);
     assert_eq!(iovs.total_size(), 12);
@@ -505,7 +577,7 @@ fn test_no_optimize_flush_miri() {
     iovs.push_copy(b"123");
 
     // Mess with the cached allocation
-    iovs.flush_arena_cache();
+    iovs.arena().flush_cache();
     iovs.clone().push_copy(b"123");
 
     // Shouldn't merge with the previous.
@@ -585,7 +657,7 @@ fn test_inherit2_miri() {
     let mut iovs = OwningIovec::new();
 
     iovs.push(b"000");
-    iovs2 = OwningIovec::new_from_arena(iovs.take_arena());
+    iovs2 = OwningIovec::new_from_arena(iovs.consumer().take_arena());
     iovs2.push_copy(b"123");
     iovs2.push_copy(b"456");
     iovs.extend(iovs2.iovs().unwrap().iter().copied());
@@ -635,7 +707,7 @@ fn test_medium_write_disjoint_miri() {
 
     let mut iovs = OwningIovec::new_from_slices(vec![IoSlice::new(&[1u8; 3])], None);
     iovs.push_copy(&[1u8; 128]);
-    iovs.flush_arena_cache();
+    iovs.arena().flush_cache();
     iovs.push_copy(&[1u8; 4096]);
 
     assert_eq!(iovs.len(), 3);
@@ -661,7 +733,7 @@ fn test_large_write_miri() {
     iovs.push_copy(&[1u8; 3]);
     iovs.push(&[1u8; 1024]);
     iovs.push_copy(&[1u8; 4093]);
-    iovs.flush_arena_cache();
+    iovs.arena().flush_cache();
 
     assert_eq!(iovs.len(), 3);
     assert_eq!(iovs.total_size(), 3 + 1024 + 4093);
@@ -710,7 +782,7 @@ fn test_backref_miri() {
     iovs.backfill(empty, b"");
     assert_eq!(iovs.flatten().unwrap(), b"a123bb56789");
 
-    iovs.pop_front();
+    iovs.consumer().pop_front();
 
     assert!(iovs.is_empty());
 }
@@ -786,9 +858,9 @@ fn test_backref_all_borrowed_miri() {
     assert_eq!(iovs.flatten().unwrap(), b"a123bb56789");
 
     assert_eq!(&*iovs.front().unwrap(), b"a");
-    iovs.pop_front();
+    iovs.consumer().pop_front();
     assert_eq!(&*iovs.front().unwrap(), b"123");
-    iovs.pop_front();
+    iovs.consumer().pop_front();
 
     assert_eq!(iovs.len(), 2);
     assert_eq!(iovs.total_size(), 2 + 5);

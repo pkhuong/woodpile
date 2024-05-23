@@ -62,7 +62,9 @@ impl StreamChunker {
             let mut slice = buf.slice();
             let concat = (&mut slice).chain(&mut reader);
 
-            let buf = iovec.arena_read_n(concat, io_block_size, NonZeroUsize::MAX)?;
+            let buf = iovec
+                .consumer()
+                .arena_read_n(concat, io_block_size, NonZeroUsize::MAX)?;
             if buf.slice().len() == initial_length {
                 // No progress, must be Eof.
                 if buf.slice().is_empty() {
@@ -115,7 +117,7 @@ impl StreamReader {
     /// Clears internal buffered state that has already been returned
     /// as record contents.
     pub fn reset_iovec(&mut self) {
-        self.iovec = OwningIovec::new_from_arena(self.iovec.take().take_arena())
+        self.iovec = OwningIovec::new_from_arena(self.iovec.consumer().take_arena())
     }
 
     /// Returns a judge function for COBS-encoded records.
