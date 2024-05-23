@@ -113,12 +113,6 @@ impl StreamReader {
         Default::default()
     }
 
-    /// Clears internal buffered state that has already been returned
-    /// as record contents.
-    pub fn reset_iovec(&mut self) {
-        self.iovec = OwningIovec::new_from_arena(self.iovec.consumer().take_arena())
-    }
-
     /// Returns a judge function for COBS-encoded records.
     ///
     /// Records whose size exceeds `max_record_size` are skipped, and
@@ -163,7 +157,7 @@ impl StreamReader {
     ) -> Result<Option<(&[IoSlice<'_>], u64)>> {
         'retry: loop {
             let io_block_size = io_block_size.unwrap_or(DEFAULT_BLOCK_SIZE);
-            self.reset_iovec();
+            self.iovec.clear();
             let mut decoder = Decoder::new_from_iovec(self.iovec.take());
             let mut skip_sentinel = true; // true until we hit a non-STUFF_SEQUENCE byte.
             let mut last_pos = 0;

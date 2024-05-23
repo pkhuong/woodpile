@@ -162,6 +162,11 @@ impl<'this> OwningIovec<'this> {
         ret
     }
 
+    pub fn clear(&mut self) {
+        self.slices.clear();
+        self.backrefs.clear();
+    }
+
     /// Pushes `slice` to the internal vector of [`IoSlice`]s.
     ///
     /// Small slices are copied, large ones borrowed, and

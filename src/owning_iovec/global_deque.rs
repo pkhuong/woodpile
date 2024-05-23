@@ -46,6 +46,14 @@ impl<'this> GlobalDeque<'this> {
         }
     }
 
+    pub fn clear(&mut self) {
+        self.slices.clear();
+        self.anchors.clear();
+        self.logical_size = 0;
+        self.consumed_size = 0;
+        self.consumed_slices = 0;
+    }
+
     /// Pushes a new slice at the end of the deque.  If we have an anchor
     /// it's pushed to the back of the anchor deque; otherwise, we assume
     /// the current last anchor has been mutated in place to take the

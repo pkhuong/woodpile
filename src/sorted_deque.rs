@@ -162,6 +162,10 @@ where
         self.items.push_back(item);
     }
 
+    pub fn clear(&mut self) {
+        self.items.clear()
+    }
+
     /// Determines whether we have no item in the container.
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
