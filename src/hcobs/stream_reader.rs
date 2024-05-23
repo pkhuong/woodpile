@@ -157,26 +157,38 @@ impl StreamReader {
         mut record_judge: impl FnMut(Range<u64>, ConsumingIovec<'_>) -> StreamAction,
         io_block_size: Option<usize>,
     ) -> Result<Option<(&[IoSlice<'_>], Range<u64>)>> {
+        #[derive(PartialEq, Eq)]
+        enum State {
+            // We start here, until we hit a non-STUFF_SEQUENCE byte
+            SkipSentinel,
+            // Then keep decoding...
+            DecodeRecord,
+            // Until we hit an invalid encoded sequence, or the judge
+            // tells us to skip.
+            SkipRecord,
+        }
+
+        let io_block_size = io_block_size.unwrap_or(DEFAULT_BLOCK_SIZE);
+
         'retry: loop {
-            let io_block_size = io_block_size.unwrap_or(DEFAULT_BLOCK_SIZE);
             self.iovec.clear();
             let mut decoder = Decoder::new_from_iovec(self.iovec.take());
-            let mut skip_sentinel = true; // true until we hit a non-STUFF_SEQUENCE byte.
+
+            let mut state = State::SkipSentinel;
             let mut range = 0u64..0u64;
-            let mut skip_record = false; // True if we want to drop the record.
             loop {
+                assert_eq!(range.is_empty(), state == State::SkipSentinel);
+
                 match self
                     .chunker
                     .pump(decoder.consumer().arena(), &mut reader, io_block_size)?
                 {
                     Chunk::Sentinel(offset) => {
-                        if !skip_sentinel {
-                            break;
+                        match state {
+                            State::SkipSentinel => range = offset..offset,
+                            // We hit a sentinel, so the record is complete.
+                            State::DecodeRecord | State::SkipRecord => break,
                         }
-
-                        // We skipped a delimiter, so we're reading a fresh record now
-                        skip_record = false;
-                        range = offset..offset;
                     }
                     Chunk::Eof => {
                         // We hit EOF and didn't find any data chunk.  Bail.
@@ -187,37 +199,43 @@ impl StreamReader {
                         break;
                     }
                     Chunk::Data((offset, slice)) => {
-                        // slice is non-empty, so offset > 0,
-                        if range.is_empty() {
-                            let start = offset - (slice.slice().len() as u64);
-                            range = start..start;
+                        // data slices are non-empty.
+                        assert!(!slice.slice().is_empty());
+
+                        match state {
+                            // We were in SkipSentinel state, so this is a new record.
+                            State::SkipSentinel => {
+                                let start = offset - (slice.slice().len() as u64);
+                                range = start..start;
+                                state = State::DecodeRecord
+                            }
+                            State::DecodeRecord => {}
+                            // Don't `continue`: let the judge have at it and decide if it's
+                            // time to just stop decoding.
+                            State::SkipRecord => {}
+                        }
+
+                        // Try to decode if we should
+                        if state == State::DecodeRecord && decoder.decode_anchored(slice).is_err() {
+                            // And skip the rest of the record if it's invalid.
+                            state = State::SkipRecord;
                         }
 
                         range.end = offset;
-                        skip_sentinel = false;
-
-                        if skip_record {
-                            continue;
-                        }
-
-                        if decoder.decode_anchored(slice).is_err() {
-                            skip_record = true;
-                        }
                     }
                 }
 
                 match record_judge(range.clone(), decoder.consumer()) {
                     StreamAction::KeepGoing => {}
-                    StreamAction::SkipRecord => {
-                        skip_record = true;
-                    }
+                    StreamAction::SkipRecord => state = State::SkipRecord,
                     StreamAction::Stop => return Ok(None),
                 }
             }
 
+            // We only get here from a DecodeRecord state (or EOF and range non-empty)
             assert_ne!(&range.start, &range.end);
 
-            if skip_record {
+            if state == State::SkipRecord {
                 self.iovec = decoder.take_iovec();
                 continue 'retry;
             }
