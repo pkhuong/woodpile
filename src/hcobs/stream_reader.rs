@@ -64,7 +64,8 @@ impl StreamChunker {
 
             let buf = iovec
                 .consumer()
-                .arena_read_n(concat, io_block_size, NonZeroUsize::MAX)?;
+                .arena()
+                .read_n(concat, io_block_size, NonZeroUsize::MAX)?;
             if buf.slice().len() == initial_length {
                 // No progress, must be Eof.
                 if buf.slice().is_empty() {

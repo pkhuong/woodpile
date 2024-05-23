@@ -1,11 +1,9 @@
 use std::io::IoSlice;
-use std::io::Read;
 use std::num::NonZeroUsize;
 
 use smallvec::SmallVec;
 
 use super::byte_arena::Anchor;
-use super::byte_arena::AnchoredSlice;
 use super::byte_arena::ByteArena;
 use super::global_deque::GlobalDeque;
 use crate::sorted_deque::SortedDeque;
@@ -392,29 +390,6 @@ impl<'a> ConsumingIovec<'a> {
     #[inline(always)]
     pub fn arena(&'a mut self) -> &'a mut ByteArena {
         &mut self.iovec().arena
-    }
-
-    /// Flushes the underlying [`[u8]`] arena's allocation cache.
-    #[inline(always)]
-    pub fn flush_arena_cache(&'a mut self) {
-        self.arena().flush_cache()
-    }
-
-    /// Ensures we have room for `len` contiguous bytes in the
-    /// underlying [`[u8]`] arena's allocation cache.
-    #[inline(always)]
-    pub fn ensure_arena_capacity(&'a mut self, len: usize) {
-        self.arena().ensure_capacity(len)
-    }
-
-    #[inline(always)]
-    pub fn arena_read_n(
-        &'a mut self,
-        src: impl Read,
-        count: usize,
-        max_attempts: NonZeroUsize,
-    ) -> std::io::Result<AnchoredSlice> {
-        self.arena().read_n(src, count, max_attempts)
     }
 
     /// Returns the underlying arena.
