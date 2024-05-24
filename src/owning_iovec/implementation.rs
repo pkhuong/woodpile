@@ -68,7 +68,9 @@ pub struct OwningIovec<'this> {
 /// Conceptually, [`ConsumingIovec`] is a mutable reference to an
 /// [`OwningIovec`] that only exposes consuming operations (i.e.,
 /// can't put slices in).  It can also be derefed as a const ref
-/// to [`OwningIovec`], for read-only methods.
+/// to [`OwningIovec`], for read-only methods.  The 'a lifetime
+/// stands for the inner `OwningIovec`'s lifetime, which must
+/// not exceed the slice's.
 ///
 /// This dataflow means we only want covariance (like regular references).
 #[derive(Debug)]
@@ -86,6 +88,12 @@ impl<'a> ConsumingIovec<'a> {
     /// mutable reference, so this internal pointer must be an
     /// exclusive reference to the pointee.  It's safe to convert back
     /// to &mut, because this wrapper acts like &mut &mut.
+    ///
+    /// We know the `OwningIovec` itself is only safe to keep around
+    /// for `'a`.  We also know the slices' lifetime is at least as wide,
+    /// so we force them to `'a` too; there's no lost functionality
+    /// because read-side methods restrict the slices' lifetime to the
+    /// same as the `OwningIovec` (to take into account owned slices).
     #[inline(always)]
     fn iovec(&'a mut self) -> &'a mut OwningIovec<'a> {
         unsafe { self.0.as_mut() }
@@ -93,6 +101,12 @@ impl<'a> ConsumingIovec<'a> {
 }
 
 impl<'a> std::convert::From<&'a mut OwningIovec<'_>> for ConsumingIovec<'a> {
+    // It's important to constraint the `&mut OwningIovec` with `'a`:
+    // the slices can have an arbitrary wider lifetime than the OwningIovec,
+    // (e.g., `OwningIovec<'static>`).  For reading purposes, it's safe
+    // to narrow the slices' lifetime to the same `'a` as the iovec:
+    // we only borrow/copy slices out of the iovec, and all const methods
+    // force the output slices' lifetime to match the iovec's.
     #[inline(always)]
     fn from(iovec: &'a mut OwningIovec<'_>) -> ConsumingIovec<'a> {
         ConsumingIovec(iovec.into())
@@ -413,7 +427,7 @@ impl<'a> ConsumingIovec<'a> {
         assert_eq!(consumed, 1);
     }
 
-    /// Pops up to the next `count` `IoSlice`s returned by [`Self::stable_prefix`].
+    /// Pops up to the next `count` `IoSlice`s returned by [`OwningIovec::stable_prefix`].
     ///
     /// Returns the number of slices consumed.
     #[inline(always)]
@@ -422,7 +436,7 @@ impl<'a> ConsumingIovec<'a> {
         self.iovec().slices.consume(count.min(num_slices))
     }
 
-    /// Pops up to the next `count` bytes in the slices returned by [`Self::stable_prefix`].
+    /// Pops up to the next `count` bytes in the slices returned by [`OwningIovec::stable_prefix`].
     ///
     /// Returns the number of bytes consumed.
     pub fn advance_by_bytes(&'a mut self, count: usize) -> usize {

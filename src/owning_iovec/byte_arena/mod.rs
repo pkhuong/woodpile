@@ -22,7 +22,7 @@ pub use anchor::Anchor;
 ///
 /// While a default-constructed [`ByteArena`] is valid (and does not
 /// allocate anything ahead of time), they're usually obtained through
-/// [`super::OwningIovec::take_arena`].
+/// [`super::ConsumingIovec::take_arena`].
 #[derive(Debug, Default)]
 pub struct ByteArena {
     cache: Option<AllocCache>,
@@ -31,9 +31,8 @@ pub struct ByteArena {
 /// An [`AnchoredSlice`] is a slice of `[u8`] backed by an internal
 /// refcounted allocation.
 ///
-/// It's usually obtained by calling [`ByteArena::read_n`] or
-/// [`super::OwningIovec::arena_read_n`], but the default value is a
-/// valid empty slice.
+/// It's usually obtained by calling [`ByteArena::read_n`], but the
+/// default value is a valid empty slice.
 #[derive(Clone, Debug)]
 pub struct AnchoredSlice {
     slice: IoSlice<'static>, // actually lives as long as `anchor`.
