@@ -17,6 +17,7 @@ pub use owning_iovec::AnchoredSlice;
 pub use owning_iovec::ByteArena;
 pub use owning_iovec::ConsumingIovec;
 pub use owning_iovec::OwningIovec;
+pub use owning_iovec::StableIovec;
 pub use vouched_time::VouchedTime;
 pub use vouched_time::MAX_BACKWARD_DISCREPANCY_MS;
 pub use vouched_time::MAX_FORWARD_DISCREPANCY_MS;

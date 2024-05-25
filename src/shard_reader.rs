@@ -115,7 +115,8 @@ impl<R: std::io::Read> ShardReader<R> {
                 return Ok(None);
             };
 
-            let slices = iovec.iovs().expect("no backpatch");
+            let consumer = iovec.stable_consumer().expect("no backpatch");
+            let slices = consumer.iovs();
             let total_size = slices.iter().map(|x| x.len()).sum::<usize>();
             // We need at least 32 bytes for the header, and 32 for the checksum.
             if total_size < 64 {

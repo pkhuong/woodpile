@@ -83,7 +83,13 @@ pub struct OwningIovec<'this> {
 // NonNull is safe because we do want covariance in 'a.
 pub struct ConsumingIovec<'a>(std::ptr::NonNull<OwningIovec<'a>>);
 
-impl<'a> ConsumingIovec<'a> {
+/// A [`StableIovec`] is a [`ConsumingIovec`] constructed from an
+/// [`OwningIovec`] that does not have any backreference in flight.
+#[derive(Debug)]
+#[repr(transparent)]
+pub struct StableIovec<'a>(ConsumingIovec<'a>);
+
+impl<'slices> ConsumingIovec<'slices> {
     /// ConsumingIovec does not implement Clone, and iovec accepts a
     /// mutable reference, so this internal pointer must be an
     /// exclusive reference to the pointee.  It's safe to convert back
@@ -95,7 +101,10 @@ impl<'a> ConsumingIovec<'a> {
     /// because read-side methods restrict the slices' lifetime to the
     /// same as the `OwningIovec` (to take into account owned slices).
     #[inline(always)]
-    fn iovec(&'a mut self) -> &'a mut OwningIovec<'a> {
+    fn iovec<'this>(&'this mut self) -> &'this mut OwningIovec<'slices>
+    where
+        'slices: 'this, // slices must outlive this for NonNull, but let's be explicit.
+    {
         unsafe { self.0.as_mut() }
     }
 }
@@ -113,6 +122,22 @@ impl<'a> std::convert::From<&'a mut OwningIovec<'_>> for ConsumingIovec<'a> {
     }
 }
 
+/// A [`ConsumingIovec`] can be converted to a [`StableIovec`] if
+/// there are no backref in flight;  otherwise, the input [`ConsumingIovec`]\
+/// is returned back as the error.
+impl<'a> std::convert::TryFrom<ConsumingIovec<'a>> for StableIovec<'a> {
+    type Error = ConsumingIovec<'a>;
+
+    #[inline(always)]
+    fn try_from(iovec: ConsumingIovec<'a>) -> Result<StableIovec<'a>, ConsumingIovec<'a>> {
+        if iovec.has_pending_backrefs() {
+            Err(iovec)
+        } else {
+            Ok(StableIovec(iovec))
+        }
+    }
+}
+
 // No DerefMut because the whole point of `ConsumingIovec` is to
 // only allow the consuming subset of mutable methods.
 impl<'a> std::ops::Deref for ConsumingIovec<'a> {
@@ -121,6 +146,22 @@ impl<'a> std::ops::Deref for ConsumingIovec<'a> {
     #[inline(always)]
     fn deref(&self) -> &OwningIovec<'a> {
         unsafe { self.0.as_ref() }
+    }
+}
+
+impl<'a> std::ops::Deref for StableIovec<'a> {
+    type Target = ConsumingIovec<'a>;
+
+    #[inline(always)]
+    fn deref(&self) -> &ConsumingIovec<'a> {
+        &self.0
+    }
+}
+
+impl<'a> std::ops::DerefMut for StableIovec<'a> {
+    #[inline(always)]
+    fn deref_mut(&mut self) -> &mut ConsumingIovec<'a> {
+        &mut self.0
     }
 }
 
@@ -166,6 +207,11 @@ impl<'this> OwningIovec<'this> {
     #[inline(always)]
     pub fn consumer(&mut self) -> ConsumingIovec<'_> {
         self.into()
+    }
+
+    #[inline(always)]
+    pub fn stable_consumer(&mut self) -> Result<StableIovec<'_>, ConsumingIovec<'_>> {
+        self.consumer().try_into()
     }
 
     /// Replaces `self` with a default-constructued [`OwningIovec`] and
@@ -348,7 +394,7 @@ impl OwningIovec<'_> {
     ///
     /// Returns the stable prefix if some backrefs are still in flight.
     #[inline(always)]
-    pub fn iovs(&self) -> std::result::Result<&[IoSlice<'_>], &[IoSlice<'_>]> {
+    pub fn iovs(&self) -> Result<&[IoSlice<'_>], &[IoSlice<'_>]> {
         let ret = self.stable_prefix();
         if self.has_pending_backrefs() {
             Err(ret)
@@ -383,46 +429,54 @@ impl OwningIovec<'_> {
     ///
     /// Returns the stable contents as an error if there is any backreference in flight.
     #[inline(always)]
-    pub fn flatten(&self) -> std::result::Result<Vec<u8>, Vec<u8>> {
+    pub fn flatten(&self) -> Result<Vec<u8>, Vec<u8>> {
         self.flatten_into(Vec::with_capacity(self.total_size()))
     }
 
     /// Appends the contents of this iovec so `dst`.
     ///
     /// Returns the stable contents as an error if there is any backreference in flight.
-    pub fn flatten_into(&self, mut dst: Vec<u8>) -> std::result::Result<Vec<u8>, Vec<u8>> {
+    #[inline(always)]
+    pub fn flatten_into(&self, dst: Vec<u8>) -> Result<Vec<u8>, Vec<u8>> {
+        let ret = self.flatten_into_impl(dst);
+
+        if self.has_pending_backrefs() {
+            Err(ret)
+        } else {
+            Ok(ret)
+        }
+    }
+
+    #[inline(never)]
+    fn flatten_into_impl(&self, mut dst: Vec<u8>) -> Vec<u8> {
         dst.reserve(self.total_size());
         for iov in self.stable_prefix() {
             dst.extend_from_slice(iov);
         }
 
-        if self.has_pending_backrefs() {
-            Err(dst)
-        } else {
-            Ok(dst)
-        }
+        dst
     }
 }
 
 impl<'a> ConsumingIovec<'a> {
     /// Returns a reference to the underlying arena.
     #[inline(always)]
-    pub fn arena(&'a mut self) -> &'a mut ByteArena {
+    pub fn arena(&mut self) -> &mut ByteArena {
         &mut self.iovec().arena
     }
 
     /// Returns the underlying arena.
-    pub fn take_arena(&'a mut self) -> ByteArena {
+    pub fn take_arena(&mut self) -> ByteArena {
         self.swap_arena(Default::default())
     }
 
-    pub fn swap_arena(&'a mut self, mut arena: ByteArena) -> ByteArena {
+    pub fn swap_arena(&mut self, mut arena: ByteArena) -> ByteArena {
         std::mem::swap(&mut arena, self.arena());
         arena
     }
 
     /// Pops the first IoSlice.  Panics if the [`OwningIovec`] has no stable prefix.
-    pub fn pop_front(&'a mut self) {
+    pub fn pop_front(&mut self) {
         let consumed = self.consume(1);
         assert_eq!(consumed, 1);
     }
@@ -431,7 +485,7 @@ impl<'a> ConsumingIovec<'a> {
     ///
     /// Returns the number of slices consumed.
     #[inline(always)]
-    pub fn consume(&'a mut self, count: usize) -> usize {
+    pub fn consume(&mut self, count: usize) -> usize {
         let num_slices = self.stable_prefix().len();
         self.iovec().slices.consume(count.min(num_slices))
     }
@@ -439,7 +493,7 @@ impl<'a> ConsumingIovec<'a> {
     /// Pops up to the next `count` bytes in the slices returned by [`OwningIovec::stable_prefix`].
     ///
     /// Returns the number of bytes consumed.
-    pub fn advance_slices(&'a mut self, count: usize) -> usize {
+    pub fn advance_slices(&mut self, count: usize) -> usize {
         let mut stable_count = 0;
         for slice in self.stable_prefix() {
             let size = slice.len();
@@ -452,6 +506,23 @@ impl<'a> ConsumingIovec<'a> {
         }
 
         self.iovec().slices.consume_by_bytes(stable_count)
+    }
+}
+
+impl StableIovec<'_> {
+    #[inline(always)]
+    pub fn iovs(&self) -> &[IoSlice<'_>] {
+        self.stable_prefix()
+    }
+
+    #[inline(always)]
+    pub fn flatten(&self) -> Vec<u8> {
+        self.flatten_into(Vec::with_capacity(self.total_size()))
+    }
+
+    #[inline(always)]
+    pub fn flatten_into(&self, dst: Vec<u8>) -> Vec<u8> {
+        self.flatten_into_impl(dst)
     }
 }
 
@@ -527,11 +598,16 @@ fn test_happy_optimize_miri() {
 
     assert_eq!(iovs.flatten().unwrap(), b"234567aaa");
 
-    assert_eq!(iovs.consumer().advance_slices(100), 9);
+    assert_eq!(
+        iovs.stable_consumer()
+            .expect("no backref")
+            .advance_slices(100),
+        9
+    );
     assert!(iovs.is_empty());
     assert_eq!(iovs.len(), 0);
     assert_eq!(iovs.total_size(), 0);
-    assert_eq!(iovs.flatten().unwrap(), b"");
+    assert_eq!(iovs.stable_consumer().unwrap().flatten(), b"");
 
     assert_eq!(iovs.consumer().advance_slices(100), 0);
     assert_eq!(iovs.flatten().unwrap(), b"");
@@ -607,7 +683,7 @@ fn test_extend_miri() {
 
     let mut dst = Vec::new();
     assert_eq!(
-        dst.write_vectored(iovs.iovs().unwrap())
+        dst.write_vectored(iovs.stable_consumer().unwrap().iovs())
             .expect("must_succeed"),
         13
     );
@@ -758,6 +834,7 @@ fn test_backref_miri() {
     iovs.push(b"56789");
 
     assert!(iovs.front().is_none());
+    assert!(iovs.stable_consumer().is_err());
     assert!(iovs.iovs().is_err());
 
     iovs.backfill(backref, b"a");
