@@ -1,4 +1,3 @@
-use std::io::IoSlice;
 use std::io::Result;
 use std::num::NonZeroUsize;
 use std::ops::Range;
@@ -148,15 +147,14 @@ impl StreamReader {
     ///
     /// Returns an IO error if `reader` does, and None on EOF.  Otherwise,
     /// returns a pair of:
-    ///  - a slice of `[IoSlice`] whose concatenation is the record's contents
-    ///  - the number of bytes reads so far (including stuff sequence bytes,
-    ///    earlier skipped or invalid records, and the bytes in the [`IoSlice`]s.
+    ///  - an [`OwningIovec`] filled with the decoded record's contents
+    ///  - the range of encoded bytes read to yield this record
     pub fn next_record_bytes(
         &mut self,
         mut reader: impl std::io::Read,
         mut record_judge: impl FnMut(Range<u64>, ConsumingIovec<'_>) -> StreamAction,
         io_block_size: Option<usize>,
-    ) -> Result<Option<(&[IoSlice<'_>], Range<u64>)>> {
+    ) -> Result<Option<(&mut OwningIovec<'static>, Range<u64>)>> {
         #[derive(PartialEq, Eq)]
         enum State {
             // We start here, until we hit a non-STUFF_SEQUENCE byte
@@ -245,7 +243,7 @@ impl StreamReader {
             };
 
             self.iovec = iovec;
-            return Ok(Some((self.iovec.iovs().expect("no backpatch left"), range)));
+            return Ok(Some((&mut self.iovec, range)));
         }
     }
 }
@@ -278,44 +276,31 @@ fn test_stream_reader_miri() {
     let mut payload = &payload.concat()[..];
 
     let mut reader = StreamReader::new();
-    let (slices, pos) = reader
+    let (iovec, pos) = reader
         .next_record_bytes(&mut payload, &judge, TEST_BLOCK_SIZE)
         .expect("must succeed")
         .expect("must have data");
     assert_eq!(pos, 0..2);
 
-    assert_eq!(
-        slices
-            .iter()
-            .flat_map(|x| -> &[u8] { x })
-            .copied()
-            .collect::<Vec<u8>>(),
-        b"a"
-    );
+    assert_eq!(iovec.flatten().expect("no backpatch"), b"a");
 
-    let (slices, pos) = reader
+    let (iovec, pos) = reader
         .next_record_bytes(&mut payload, &judge, TEST_BLOCK_SIZE)
         .expect("must succeed")
         .expect("must have data");
     assert_eq!(pos, 4..7);
 
-    assert_eq!(
-        slices
-            .iter()
-            .flat_map(|x| -> &[u8] { x })
-            .copied()
-            .collect::<Vec<u8>>(),
-        b"bc"
-    );
+    assert_eq!(iovec.flatten().expect("no backpatch"), b"bc");
 
-    let (slices, pos) = reader
+    let (iovec, pos) = reader
         .next_record_bytes(&mut payload, &judge, TEST_BLOCK_SIZE)
         .expect("must succeed")
         .expect("must have data");
     assert_eq!(pos, 11..15);
 
     assert_eq!(
-        slices
+        iovec
+            .stable_prefix()
             .iter()
             .flat_map(|x| -> &[u8] { x })
             .copied()
@@ -323,20 +308,13 @@ fn test_stream_reader_miri() {
         b"def"
     );
 
-    let (slices, pos) = reader
+    let (iovec, pos) = reader
         .next_record_bytes(&mut payload, &judge, TEST_BLOCK_SIZE)
         .expect("must succeed")
         .expect("must have data");
     assert_eq!(pos, 51..53);
 
-    assert_eq!(
-        slices
-            .iter()
-            .flat_map(|x| -> &[u8] { x })
-            .copied()
-            .collect::<Vec<u8>>(),
-        b"z"
-    );
+    assert_eq!(iovec.flatten().expect("no backpatch"), b"z");
 
     // Should hit EOF
     assert!(reader
@@ -358,33 +336,19 @@ fn test_stream_reader_partial_miri() {
 
     let judge = StreamReader::chunk_judge(usize::MAX, None);
     let mut reader = StreamReader::new();
-    let (slices, pos) = reader
+    let (iovec, pos) = reader
         .next_record_bytes(&mut payload, &judge, TEST_BLOCK_SIZE)
         .expect("must succeed")
         .expect("must have data");
     assert_eq!(pos, 0..2);
-    assert_eq!(
-        slices
-            .iter()
-            .flat_map(|x| -> &[u8] { x })
-            .copied()
-            .collect::<Vec<u8>>(),
-        b"a"
-    );
-    let (slices, pos) = reader
+    assert_eq!(iovec.flatten().expect("no backpatch"), b"a");
+    let (iovec, pos) = reader
         .next_record_bytes(&mut payload, &judge, TEST_BLOCK_SIZE)
         .expect("must succeed")
         .expect("must have data");
     assert_eq!(pos, 4..7);
 
-    assert_eq!(
-        slices
-            .iter()
-            .flat_map(|x| -> &[u8] { x })
-            .copied()
-            .collect::<Vec<u8>>(),
-        b"bc"
-    );
+    assert_eq!(iovec.flatten().expect("no backpatch"), b"bc");
 
     // Should hit EOF
     assert!(reader
@@ -396,19 +360,12 @@ fn test_stream_reader_partial_miri() {
     let judge = StreamReader::chunk_judge(usize::MAX, Some(1u64));
     let mut payload = &contents.concat()[..];
     let mut reader = StreamReader::new();
-    let (slices, pos) = reader
+    let (iovec, pos) = reader
         .next_record_bytes(&mut payload, &judge, TEST_BLOCK_SIZE)
         .expect("must succeed")
         .expect("must have data");
     assert_eq!(pos, 0..2);
-    assert_eq!(
-        slices
-            .iter()
-            .flat_map(|x| -> &[u8] { x })
-            .copied()
-            .collect::<Vec<u8>>(),
-        b"a"
-    );
+    assert_eq!(iovec.flatten().expect("no batckpatch"), b"a");
 
     // Should immediately hit EOF
     assert!(reader
@@ -422,19 +379,12 @@ fn test_stream_reader_partial_miri() {
     let judge = StreamReader::chunk_judge(usize::MAX, Some(1u64));
     let mut payload = &contents.concat()[..];
     let mut reader = StreamReader::new();
-    let (slices, pos) = reader
+    let (iovec, pos) = reader
         .next_record_bytes(&mut payload, &judge, TEST_BLOCK_SIZE)
         .expect("must succeed")
         .expect("must have data");
     assert_eq!(pos, 0..2);
-    assert_eq!(
-        slices
-            .iter()
-            .flat_map(|x| -> &[u8] { x })
-            .copied()
-            .collect::<Vec<u8>>(),
-        b"a"
-    );
+    assert_eq!(iovec.flatten().expect("no backpatch"), b"a");
 
     // Should immediately hit EOF
     assert!(reader
@@ -482,7 +432,7 @@ fn test_stream_reader_many_stuff_miri() {
 
     let mut payload = &payload.concat()[..];
     let mut reader = StreamReader::new();
-    let (slices, pos) = reader
+    let (iovec, pos) = reader
         .next_record_bytes(
             &mut payload,
             StreamReader::chunk_judge(usize::MAX, None),
@@ -491,6 +441,7 @@ fn test_stream_reader_many_stuff_miri() {
         .expect("must succeed")
         .expect("must have data");
 
+    let slices = iovec.stable_prefix();
     assert_eq!(slices.len(), 0);
     assert_eq!(pos, 4..5);
 }
@@ -502,7 +453,7 @@ fn test_stream_reader_one_message_miri() {
 
     let mut reader = StreamReader::new();
 
-    let (slices, pos) = reader
+    let (iovec, pos) = reader
         .next_record_bytes(
             &mut payload,
             StreamReader::chunk_judge(usize::MAX, None),
@@ -511,14 +462,8 @@ fn test_stream_reader_one_message_miri() {
         .expect("must succeed")
         .expect("must have data");
     assert_eq!(pos, 0..2);
-    assert_eq!(
-        slices
-            .iter()
-            .flat_map(|x| -> &[u8] { x })
-            .copied()
-            .collect::<Vec<u8>>(),
-        b"a"
-    );
+
+    assert_eq!(iovec.flatten().expect("no backpatch"), b"a");
 
     assert!(reader
         .next_record_bytes(
@@ -576,7 +521,7 @@ fn test_stream_reader_error_miri() {
 
     let mut reader = StreamReader::new();
 
-    let (slices, pos) = reader
+    let (iovec, pos) = reader
         .next_record_bytes(
             &mut payload,
             StreamReader::chunk_judge(usize::MAX, None),
@@ -585,14 +530,7 @@ fn test_stream_reader_error_miri() {
         .expect("must succeed")
         .expect("must have data");
     assert_eq!(pos, 0..2);
-    assert_eq!(
-        slices
-            .iter()
-            .flat_map(|x| -> &[u8] { x })
-            .copied()
-            .collect::<Vec<u8>>(),
-        b"a"
-    );
+    assert_eq!(iovec.flatten().expect("no backpatch"), b"a");
 
     assert!(reader
         .next_record_bytes(

@@ -108,13 +108,14 @@ impl<R: std::io::Read> ShardReader<R> {
         use std::io::Read;
         let judge = StreamReader::chunk_judge(self.max_record_size, Some(self.max_file_offset));
         loop {
-            let Some((slices, range)) =
+            let Some((iovec, range)) =
                 self.stream_reader
                     .next_record_bytes(&mut self.file, &judge, None)?
             else {
                 return Ok(None);
             };
 
+            let slices = iovec.iovs().expect("no backpatch");
             let total_size = slices.iter().map(|x| x.len()).sum::<usize>();
             // We need at least 32 bytes for the header, and 32 for the checksum.
             if total_size < 64 {
