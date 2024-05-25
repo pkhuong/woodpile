@@ -439,7 +439,7 @@ impl<'a> ConsumingIovec<'a> {
     /// Pops up to the next `count` bytes in the slices returned by [`OwningIovec::stable_prefix`].
     ///
     /// Returns the number of bytes consumed.
-    pub fn advance_by_bytes(&'a mut self, count: usize) -> usize {
+    pub fn advance_slices(&'a mut self, count: usize) -> usize {
         let mut stable_count = 0;
         for slice in self.stable_prefix() {
             let size = slice.len();
@@ -521,19 +521,19 @@ fn test_happy_optimize_miri() {
     assert_eq!(dst, b"0001234567aaa");
 
     // now consume 4 bytes.
-    assert_eq!(iovs.consumer().advance_by_bytes(4), 4);
+    assert_eq!(iovs.consumer().advance_slices(4), 4);
     assert_eq!(iovs.len(), 2);
     assert_eq!(iovs.total_size(), 9);
 
     assert_eq!(iovs.flatten().unwrap(), b"234567aaa");
 
-    assert_eq!(iovs.consumer().advance_by_bytes(100), 9);
+    assert_eq!(iovs.consumer().advance_slices(100), 9);
     assert!(iovs.is_empty());
     assert_eq!(iovs.len(), 0);
     assert_eq!(iovs.total_size(), 0);
     assert_eq!(iovs.flatten().unwrap(), b"");
 
-    assert_eq!(iovs.consumer().advance_by_bytes(100), 0);
+    assert_eq!(iovs.consumer().advance_slices(100), 0);
     assert_eq!(iovs.flatten().unwrap(), b"");
 }
 

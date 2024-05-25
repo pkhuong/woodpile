@@ -140,7 +140,7 @@ impl ShardWriter {
                 Err(e) => return Err(e),
             }
         };
-        self.encoder.consumer().advance_by_bytes(written);
+        self.encoder.consumer().advance_slices(written);
         if written == 0 && byte_count > 0 {
             Err(std::io::Error::new(
                 std::io::ErrorKind::WriteZero,
@@ -224,7 +224,7 @@ impl ShardWriter {
                     ));
                 }
 
-                iovec.consumer().advance_by_bytes(written);
+                iovec.consumer().advance_slices(written);
             }
 
             Ok(())
