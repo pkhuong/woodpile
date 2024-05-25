@@ -20,7 +20,7 @@ use crate::sliding_deque::SlidingDeque;
 
 /// In the general case, a [`SortedDeque`] accepts an object that
 /// implements the methods we need on an arbitrary type.
-pub trait SortedDequeMarker<T> {
+pub trait SortedDequeComparator<T> {
     type Key;
 
     /// We can extract a comparison key from an item.
@@ -33,11 +33,20 @@ pub trait SortedDequeMarker<T> {
     /// And we can compare keys.
     fn cmp(&self, x: &Self::Key, y: &Self::Key) -> std::cmp::Ordering;
 
-    /// We can mark an item as erased.
-    fn mark_erased(&self, item: &mut T);
+    /// And check whether an item is erased (defaults to always false,
+    /// should be overridden if `SortedDequeMarker` is implemented.
+    #[inline(always)]
+    fn is_erased(&self, _item: &T) -> bool {
+        false
+    }
+}
 
-    /// And check whether an item is erased.
-    fn is_erased(&self, item: &T) -> bool;
+pub trait SortedDequeMarker<T>: SortedDequeComparator<T> {
+    /// We can mark an item as erased.
+    ///
+    /// Implementors of this trait must also implement
+    /// [`SortedDequeComparator::is_erased`].
+    fn mark_erased(&self, item: &mut T);
 }
 
 /// In the simple case [`SortedDeque`] supports any type that
@@ -50,44 +59,56 @@ pub trait SortedDequeItem: Ord {
 
 /// And from `SortedDequeItem`, we can implement a stateless
 /// `SortedDequeMarker`.
-impl<T: SortedDequeItem + Copy> SortedDequeMarker<T> for () {
+impl<T: SortedDequeItem + Copy> SortedDequeComparator<T> for () {
     type Key = T;
 
+    #[inline(always)]
     fn extract_key(&self, item: &T) -> T {
         *item
     }
 
+    #[inline(always)]
     fn cmp(&self, x: &T, y: &T) -> Ordering {
         x.cmp(y)
     }
 
-    fn mark_erased(&self, item: &mut T) {
-        item.mark_erased()
-    }
-
+    #[inline(always)]
     fn is_erased(&self, item: &T) -> bool {
         item.is_erased()
     }
 }
 
+impl<T: SortedDequeItem + Copy> SortedDequeMarker<T> for () {
+    #[inline(always)]
+    fn mark_erased(&self, item: &mut T) {
+        item.mark_erased();
+        assert!(item.is_erased());
+    }
+}
+
 /// We also have an easy implementation for pairs of key and optional value.
-impl<Key: Copy + Ord, Value: Copy> SortedDequeMarker<(Key, Option<Value>)> for () {
+impl<Key: Copy + Ord, Value: Copy> SortedDequeComparator<(Key, Option<Value>)> for () {
     type Key = Key;
 
+    #[inline(always)]
     fn extract_key(&self, item: &(Key, Option<Value>)) -> Key {
         item.0
     }
 
+    #[inline(always)]
     fn cmp(&self, x: &Key, y: &Key) -> Ordering {
         x.cmp(y)
     }
 
-    fn mark_erased(&self, item: &mut (Key, Option<Value>)) {
-        item.1 = None;
-    }
-
+    #[inline(always)]
     fn is_erased(&self, item: &(Key, Option<Value>)) -> bool {
         item.1.is_none()
+    }
+}
+impl<Key: Copy + Ord, Value: Copy> SortedDequeMarker<(Key, Option<Value>)> for () {
+    #[inline(always)]
+    fn mark_erased(&self, item: &mut (Key, Option<Value>)) {
+        item.1 = None;
     }
 }
 
@@ -105,7 +126,7 @@ pub struct SortedDeque<Container, Marker = ()>
 where
     Container: PushTruncateContainer + Clone + Default,
     <Container as PushTruncateContainer>::Item: Copy,
-    Marker: SortedDequeMarker<<Container as PushTruncateContainer>::Item> + Clone,
+    Marker: SortedDequeComparator<<Container as PushTruncateContainer>::Item> + Clone,
 {
     /// Values in the `items` deque may be logically eraseed, except for the
     /// first/last: we always clean up from both ends.
@@ -117,8 +138,9 @@ impl<Container, Marker> Default for SortedDeque<Container, Marker>
 where
     Container: PushTruncateContainer + Clone + Default,
     Container::Item: Copy,
-    Marker: SortedDequeMarker<Container::Item> + Clone + Default,
+    Marker: SortedDequeComparator<Container::Item> + Clone + Default,
 {
+    #[inline(always)]
     fn default() -> Self {
         Self::new(Default::default(), Default::default())
     }
@@ -128,7 +150,7 @@ impl<Container, Marker> SortedDeque<Container, Marker>
 where
     Container: PushTruncateContainer + Clone + Default,
     Container::Item: Copy,
-    Marker: SortedDequeMarker<Container::Item> + Clone,
+    Marker: SortedDequeComparator<Container::Item> + Clone,
 {
     /// Creates a fresh `SortedDeque` from the given `items` and `marker`.
     pub fn new(items: Container, marker: Marker) -> Self {
@@ -162,17 +184,20 @@ where
         self.items.push_back(item);
     }
 
+    /// Removes all items from `self`.
     pub fn clear(&mut self) {
         self.items.clear()
     }
 
     /// Determines whether we have no item in the container.
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
 
     /// Returns an iterator for the (non-erased) items in the [`SortedDeque`],
     /// in FIFO (and thus sorted) order.
+    #[inline(always)]
     pub fn iter(&self) -> impl Iterator<Item = &Container::Item> {
         self.items
             .iter()
@@ -180,11 +205,13 @@ where
     }
 
     /// Returns the first (least-valued) item, if we have one.
+    #[inline(always)]
     pub fn first(&self) -> Option<&Container::Item> {
         self.items.front()
     }
 
     /// Consumes and returns the first item.
+    #[inline(never)]
     pub fn pop_first(&mut self) -> Option<Container::Item> {
         let ret = self.items.pop_front()?;
         self.cleanup_front();
@@ -192,11 +219,13 @@ where
     }
 
     /// Returns the last (highest valued) item, if we have one
+    #[inline(always)]
     pub fn last(&self) -> Option<&Container::Item> {
         self.items.back()
     }
 
     /// Consumes and returns the last item.
+    #[inline(never)]
     pub fn pop_last(&mut self) -> Option<Container::Item> {
         let ret = self.items.pop_back()?;
         self.cleanup_back();
@@ -215,10 +244,52 @@ where
         }
     }
 
+    /// Find the index of the item that corresponds to `key`, if any.
+    #[inline(always)]
+    fn find_index(&self, key: &Marker::Key) -> Option<usize> {
+        let comparator = |item| self.marker.cmp(&self.marker.extract_key(item), key);
+        self.items.binary_search_by(comparator).ok()
+    }
+
+    /// Removes any newly exposed erased item at the back of the underlying deque.
+    #[inline(always)]
+    fn cleanup_back(&mut self) {
+        while let Some(back) = self.items.back() {
+            if !self.marker.is_erased(back) {
+                break;
+            }
+
+            self.items.pop_back();
+        }
+    }
+
+    /// Removes any newly exposed erased item at the front of the underlying deque.
+    #[inline(always)]
+    fn cleanup_front(&mut self) {
+        let mut to_drop = usize::MAX;
+        // Find the index of the first non-deleted item
+        for (idx, item) in self.items.iter().enumerate() {
+            if !self.marker.is_erased(item) {
+                to_drop = idx;
+                break;
+            }
+        }
+
+        let _ = self.items.advance(to_drop);
+    }
+}
+
+impl<Container, Marker> SortedDeque<Container, Marker>
+where
+    Container: PushTruncateContainer + Clone + Default,
+    Container::Item: Copy,
+    Marker: SortedDequeMarker<Container::Item> + Clone,
+{
     /// Looks for the item that matches `key`, and removes it
     /// if it is found.
     ///
     /// Once removed, an item will not be found again.
+    #[inline(never)]
     pub fn remove(&mut self, key: &Marker::Key) -> Option<Container::Item> {
         let len = self.items.len();
         let idx = self.find_index(key)?;
@@ -242,37 +313,6 @@ where
             assert!(self.marker.is_erased(item));
             Some(ret)
         }
-    }
-
-    /// Find the index of the item that corresponds to `key`, if any.
-    fn find_index(&self, key: &Marker::Key) -> Option<usize> {
-        let comparator = |item| self.marker.cmp(&self.marker.extract_key(item), key);
-        self.items.binary_search_by(comparator).ok()
-    }
-
-    /// Removes any newly exposed erased item at the back of the underlying deque.
-    fn cleanup_back(&mut self) {
-        while let Some(back) = self.items.back() {
-            if !self.marker.is_erased(back) {
-                break;
-            }
-
-            self.items.pop_back();
-        }
-    }
-
-    /// Removes any newly exposed erased item at the front of the underlying deque.
-    fn cleanup_front(&mut self) {
-        let mut to_drop = usize::MAX;
-        // Find the index of the first non-deleted item
-        for (idx, item) in self.items.iter().enumerate() {
-            if !self.marker.is_erased(item) {
-                to_drop = idx;
-                break;
-            }
-        }
-
-        let _ = self.items.advance(to_drop);
     }
 }
 
