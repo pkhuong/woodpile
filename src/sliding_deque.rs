@@ -68,6 +68,7 @@ where
     <Container as PushTruncateContainer>::Item: Copy,
 {
     /// Creates a new empty [`SlidingDeque`]
+    #[inline(always)]
     pub fn new() -> Self {
         Default::default()
     }
@@ -202,6 +203,7 @@ where
 {
     type Target = [<Container as PushTruncateContainer>::Item];
 
+    #[inline(always)]
     fn deref(&self) -> &Self::Target {
         &self.container.slice()[self.consumed_prefix..]
     }
@@ -212,6 +214,7 @@ where
     Container: PushTruncateContainer + Clone + Default,
     <Container as PushTruncateContainer>::Item: Copy,
 {
+    #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.container.slice_mut()[self.consumed_prefix..]
     }
@@ -222,6 +225,7 @@ where
     Container: PushTruncateContainer + Clone + Default,
     <Container as PushTruncateContainer>::Item: Copy,
 {
+    #[inline(always)]
     fn from(container: Container) -> SlidingDeque<Container> {
         SlidingDeque {
             consumed_prefix: 0,
