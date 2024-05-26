@@ -3,7 +3,6 @@
 use crate::hcobs::StreamReader;
 
 use std::fs::File;
-use std::io::IoSlice;
 use std::io::Result;
 use std::ops::Range;
 
@@ -32,55 +31,6 @@ pub struct ShardReader<R: std::io::Read = File> {
     file: R,
     max_record_size: usize,
     max_file_offset: u64,
-}
-
-struct SliceReader<'this> {
-    slices: &'this [IoSlice<'this>],
-    slice_idx: usize,
-    byte_idx: usize,
-    hasher: blake3::Hasher,
-}
-
-impl<'this> SliceReader<'this> {
-    pub fn new(slices: &'this [IoSlice<'this>]) -> Self {
-        Self {
-            slices,
-            slice_idx: 0,
-            byte_idx: 0,
-            hasher: blake3::Hasher::new_keyed(&BLAKE3_KEY),
-        }
-    }
-
-    pub fn hasher(&self) -> &blake3::Hasher {
-        &self.hasher
-    }
-}
-
-impl std::io::Read for SliceReader<'_> {
-    fn read(&mut self, mut dst: &mut [u8]) -> Result<usize> {
-        let mut written = 0;
-        while !dst.is_empty() {
-            let Some(slice) = self.slices.get(self.slice_idx) else {
-                break;
-            };
-
-            let remaining = &slice[self.byte_idx..];
-            let to_write = remaining.len().min(dst.len());
-            dst[..to_write].copy_from_slice(&remaining[..to_write]);
-            self.hasher.update(&remaining[..to_write]);
-            written += to_write;
-
-            self.byte_idx += to_write;
-            dst = &mut dst[to_write..];
-
-            if self.byte_idx >= slice.len() {
-                self.slice_idx += 1;
-                self.byte_idx = 0;
-            }
-        }
-
-        Ok(written)
-    }
 }
 
 impl<R: std::io::Read> ShardReader<R> {
@@ -115,23 +65,20 @@ impl<R: std::io::Read> ShardReader<R> {
                 return Ok(None);
             };
 
-            let consumer = iovec.stable_consumer().expect("no backpatch");
-            let slices = consumer.iovs();
-            let total_size = slices.iter().map(|x| x.len()).sum::<usize>();
+            let mut consumer = iovec.stable_consumer().expect("no backpatch");
+            let total_size = consumer.total_size();
             // We need at least 32 bytes for the header, and 32 for the checksum.
             if total_size < 64 {
                 continue;
             }
 
-            let mut reader = SliceReader::new(slices);
-
             let mut record_id = [0u8; 16];
             let mut timestamp_le = [0u8; 16];
             // We already checked.
-            reader
+            consumer
                 .read_exact(&mut record_id)
                 .expect("must have room for header");
-            reader
+            consumer
                 .read_exact(&mut timestamp_le)
                 .expect("must have room for header");
 
@@ -142,21 +89,23 @@ impl<R: std::io::Read> ShardReader<R> {
             };
 
             let mut dst = vec![0; total_size - 64];
-            reader
+            consumer
                 .read_exact(&mut dst)
                 .expect("must have room for data");
 
-            let checksum = reader.hasher().finalize();
+            // XXX: should checksum incrementally, while copying to `dst`.
+            let checksum = blake3::Hasher::new_keyed(&BLAKE3_KEY)
+                .update(&record_id)
+                .update(&timestamp_le)
+                .update(&dst)
+                .finalize();
             let mut footer = [0u8; 32];
-            reader
+            consumer
                 .read_exact(&mut footer)
                 .expect("must have room for footer");
 
             // We should be at EOF.
-            {
-                let mut dst = [0u8; 1];
-                assert_eq!(reader.read(&mut dst).expect("should succeed"), 0);
-            }
+            assert!(consumer.is_empty());
 
             if checksum == blake3::Hash::from_bytes(footer) {
                 let ret = Record {
