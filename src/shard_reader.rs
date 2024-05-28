@@ -121,7 +121,7 @@ impl<R: std::io::Read> ShardReader<R> {
     }
 
     /// [`ShardReader`] is an [`std::iter::Iterator`].
-    pub fn iter(self) -> Self {
+    pub fn iter(&mut self) -> &mut Self {
         self
     }
 }
@@ -171,7 +171,7 @@ fn test_shard_reader() {
 
     let contents = &expected.concat()[..];
 
-    let reader = ShardReader::new(contents, 1000, None);
+    let mut reader = ShardReader::new(contents, 1000, None);
     assert_eq!(
         reader
             .iter()
@@ -246,7 +246,7 @@ fn test_shard_reader_large() {
     let reader = ShardReader::new(contents, 64, None);
     assert_eq!(
         reader
-            .iter()
+            .into_iter()
             .collect::<Result<Vec<_>>>()
             .expect("must succeed"),
         []
