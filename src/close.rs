@@ -13,6 +13,7 @@
 //! the epoch is actually closed (e.g., by sleeping for a bit and
 //! calling [`close_epoch_subdir`]) and re-check their result: the
 //! data read or written could have missed the winning snapshot.
+use std::ffi::OsStr;
 use std::io::Result;
 use std::path::Path;
 use std::path::PathBuf;
@@ -23,6 +24,50 @@ const SNAPSHOT_SUBDIR: &str = "snapshot";
 const IN_PROGRESS_MARKER: &str = "000started";
 const SUMMARY_FILE: &str = "100summary";
 const SUMMARY_TMP_PREFIX: &str = ".woodpile_tmp_summary-";
+
+/// Generates a path for the summary file in the snapshot subdirectory
+/// of the pile epoch directory `dir`.
+pub fn closed_subdir_summary_path(dir: PathBuf) -> PathBuf {
+    closed_subdir_file_path(dir, OsStr::new(SUMMARY_FILE))
+}
+
+/// Generates a path for `file` in the snapshot subdirectory of the
+/// pile epoch directory `dir`.
+///
+/// When the file doesn't exist, recursively flushes (NFS) caches up to
+/// the log directory to make sure this isn't just an NFS issue.
+pub fn closed_subdir_file_path(dir: PathBuf, file: impl AsRef<OsStr>) -> PathBuf {
+    fn flush_cache(dir: &Path) -> Result<()> {
+        let _ = dir.read_dir()?.next();
+        Ok(())
+    }
+
+    fn flush_dirs(dir: Option<&Path>, depth_limit: usize) -> Option<()> {
+        let dir = dir?;
+
+        if depth_limit > 0 && !dir.is_dir() {
+            flush_dirs(dir.parent(), depth_limit - 1);
+        }
+
+        flush_cache(dir).ok()
+    }
+
+    fn doit(dir: PathBuf, file: &OsStr) -> PathBuf {
+        let mut target = dir;
+        target.push(SNAPSHOT_SUBDIR);
+        target.push(file);
+
+        if !target.is_file() {
+            // Flush direntry caches for up to 3 levels of directory
+            // (snapshot subdir, epoch pile subdir, log subdir).
+            flush_dirs(target.parent(), 3);
+        }
+
+        target
+    }
+
+    doit(dir, file.as_ref())
+}
 
 /// Determines whether an epoch has been or is being closed (snapshotted).
 ///
@@ -827,7 +872,7 @@ fn test_reject_close_3() {
 }
 
 /// An early call to `close_epoch_subdir` should no-op and return a deadline in the future,
-/// even its internal call to `start_closing_epoch_subdir` succeeds.
+/// even if its internal call to `start_closing_epoch_subdir` succeeds.
 #[cfg(not(miri))]
 #[test]
 fn test_reject_close_4() {
@@ -853,6 +898,8 @@ fn test_reject_close_4() {
     let temp = TestDir::temp()
         .create(&subdir, FileType::Dir)
         .create(&format!("{}/foo.log", &subdir), FileType::RandomFile(100));
+
+    let initial_summary_path = closed_subdir_summary_path(temp.path(&subdir));
 
     // start_closing_epoch_subdir succeeds
     let now = crate::VouchedTime::new(
@@ -888,6 +935,12 @@ fn test_reject_close_4() {
             .unwrap()
             .permissions()
             .readonly()
+    );
+
+    // the summary path hasn't changed
+    assert_eq!(
+        initial_summary_path,
+        closed_subdir_summary_path(temp.path(&subdir))
     );
 
     // Let the Drop traits clean up
@@ -926,6 +979,8 @@ fn test_close_one_file() {
         .create(&subdir, FileType::Dir)
         .create(&format!("{}/foo.log", &subdir), FileType::RandomFile(100));
 
+    let summary_path = closed_subdir_summary_path(temp.path(&subdir));
+
     // start_closing_epoch_subdir succeeds
     let now = crate::VouchedTime::new(
         datetime!(2024-04-07 16:01:39.95),
@@ -956,8 +1011,7 @@ fn test_close_one_file() {
 
     assert_eq!(
         std::fs::read(temp.path(&format!("{}/foo.log", &subdir))).unwrap(),
-        std::fs::read(temp.path(&format!("{}/{}/{}", &subdir, SNAPSHOT_SUBDIR, SUMMARY_FILE)))
-            .unwrap()
+        std::fs::read(summary_path).unwrap()
     );
 
     // The dummy file should have been cleaned up.
@@ -1020,9 +1074,7 @@ fn test_close_two_files() {
 
     let foo_bytes = std::fs::read(temp.path(&format!("{}/foo.log", &subdir))).unwrap();
     let bar_bytes = std::fs::read(temp.path(&format!("{}/bar.log", &subdir))).unwrap();
-    let snap =
-        std::fs::read(temp.path(&format!("{}/{}/{}", &subdir, SNAPSHOT_SUBDIR, SUMMARY_FILE)))
-            .unwrap();
+    let snap = std::fs::read(closed_subdir_summary_path(temp.path(&subdir))).unwrap();
     // The order in which the logs appear in the SUMMARY_FILE is unspecified.
     let match_ab = snap == [&*foo_bytes, &*bar_bytes].concat();
     let match_ba = snap == [bar_bytes, foo_bytes].concat();
@@ -1080,9 +1132,7 @@ fn test_close_twice() {
     );
 
     // The summary file must now be read-only.
-    let perms =
-        std::fs::metadata(temp.path(&format!("{}/{}/{}", &subdir, SNAPSHOT_SUBDIR, SUMMARY_FILE)))
-            .unwrap();
+    let perms = std::fs::metadata(closed_subdir_summary_path(temp.path(&subdir))).unwrap();
     assert!(perms.permissions().readonly());
 
     // subsequent ones should succeed too
@@ -1100,9 +1150,7 @@ fn test_close_twice() {
 
     let foo_bytes = std::fs::read(temp.path(&format!("{}/foo.log", &subdir))).unwrap();
     let bar_bytes = std::fs::read(temp.path(&format!("{}/bar.log", &subdir))).unwrap();
-    let snap =
-        std::fs::read(temp.path(&format!("{}/{}/{}", &subdir, SNAPSHOT_SUBDIR, SUMMARY_FILE)))
-            .unwrap();
+    let snap = std::fs::read(closed_subdir_summary_path(temp.path(&subdir))).unwrap();
     // The order in which the logs appear in the SUMMARY_FILE is unspecified.
     let match_ab = snap == [&*foo_bytes, &*bar_bytes].concat();
     let match_ba = snap == [bar_bytes, foo_bytes].concat();
