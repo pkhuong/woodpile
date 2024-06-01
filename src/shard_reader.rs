@@ -15,12 +15,49 @@ const BLAKE3_KEY: [u8; 32] = *b"Woodpile record checksum hashkey";
 ///
 /// A record is only generated when the checksum recomputed from
 /// the contents matches the checksum on disk.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+///
+/// The relational operators disregard the payload: the checksum
+/// should fully describe the record id, timestamp, and payload.
+///
+/// Records are sorted by timestamp, record id, then checksum.
+#[derive(Clone, Debug, Eq)]
 pub struct Record {
-    pub record_id: [u8; 16],
     pub timestamp: time::PrimitiveDateTime,
+    pub record_id: [u8; 16],
     pub checksum: [u8; 32],
     pub payload: Box<[u8]>,
+}
+
+impl PartialEq for Record {
+    fn eq(&self, other: &Record) -> bool {
+        self.checksum.eq(&other.checksum)
+    }
+}
+
+impl std::hash::Hash for Record {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: std::hash::Hasher,
+    {
+        state.write(&self.checksum)
+    }
+}
+
+impl PartialOrd for Record {
+    fn partial_cmp(&self, other: &Record) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Record {
+    fn cmp(&self, other: &Record) -> std::cmp::Ordering {
+        #[inline(always)]
+        fn key(this: &Record) -> (&time::PrimitiveDateTime, &[u8; 16], &[u8; 32]) {
+            (&this.timestamp, &this.record_id, &this.checksum)
+        }
+
+        key(self).cmp(&key(other))
+    }
 }
 
 /// A [`ShardReader`] attempts to decode [`Record`]s sequentially
@@ -109,8 +146,8 @@ impl<R: std::io::Read> ShardReader<R> {
 
             if checksum == blake3::Hash::from_bytes(footer) {
                 let ret = Record {
-                    record_id,
                     timestamp: time::PrimitiveDateTime::new(timestamp.date(), timestamp.time()),
+                    record_id,
                     checksum: *checksum.as_bytes(),
                     payload: dst.into_boxed_slice(),
                 };
@@ -180,8 +217,8 @@ fn test_shard_reader() {
         [
             (
                 Record {
-                    record_id: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
                     timestamp: datetime!(2024-04-21 0:58:46.1),
+                    record_id: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
                     checksum: [
                         100, 125, 17, 5, 134, 197, 11, 182, 56, 55, 179, 46, 136, 201, 34, 40, 143,
                         186, 10, 14, 178, 53, 104, 75, 0, 61, 166, 1, 8, 1, 212, 35
@@ -192,8 +229,8 @@ fn test_shard_reader() {
             ),
             (
                 Record {
-                    record_id: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
                     timestamp: datetime!(2024-04-21 0:58:46.5),
+                    record_id: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
                     checksum: [
                         201, 51, 72, 200, 211, 235, 24, 12, 15, 157, 35, 77, 38, 138, 38, 12, 249,
                         224, 10, 116, 254, 193, 18, 166, 237, 158, 230, 191, 137, 20, 82, 130
