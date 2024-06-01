@@ -2,6 +2,7 @@ pub mod close;
 mod epoch_writer;
 pub mod hcobs;
 mod owning_iovec;
+pub mod pile_reader;
 pub mod shard_reader;
 pub mod shard_writer;
 pub mod sliding_deque;
@@ -38,7 +39,7 @@ pub const CLOCK_ERROR_BOUND: Duration = Duration::new(2, 0);
 /// The period at which we open a new epoch.  For example, the current
 /// value for 5 means that we'll open an epoch at the top of the hour,
 /// 00:00, then 5 second later at 00:05, etc.  It makes our life
-/// simpler, especially around pea seconds, if this value is a factor
+/// simpler, especially around leap seconds, if this value is a factor
 /// of 86400 (the number of seconds in a day), and at least 2.
 const EPOCH_PERIOD: u32 = 5;
 
