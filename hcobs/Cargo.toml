@@ -1,0 +1,13 @@
+[package]
+name = "hcobs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+owning_iovec = { path = "../owning_iovec" }
+
+[dev-dependencies]
+rusty-fork = "0.3"
+
+[lints]
+workspace = true
