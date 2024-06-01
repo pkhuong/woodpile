@@ -1,7 +1,9 @@
 pub mod close;
 mod epoch_writer;
 pub mod hcobs;
+pub mod log;
 mod owning_iovec;
+pub mod pile;
 pub mod pile_reader;
 pub mod shard_reader;
 pub mod shard_writer;
