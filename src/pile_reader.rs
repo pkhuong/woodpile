@@ -52,7 +52,7 @@ pub enum PileReaderMode {
     Fsync,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct PileReaderOptions {
     /// In read-only mode, creating a new [`PileReader`] never
     /// (directly, atime updates could still happen) writes to files
