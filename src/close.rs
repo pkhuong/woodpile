@@ -27,6 +27,9 @@ const SUMMARY_TMP_PREFIX: &str = ".woodpile_tmp_summary-";
 
 /// Generates a path for the summary file in the snapshot subdirectory
 /// of the pile epoch directory `dir`.
+///
+/// When the file doesn't exist, recursively flushes NFS caches up to
+/// the log directory to make sure this isn't just an NFS issue.
 pub fn closed_subdir_summary_path(dir: PathBuf) -> PathBuf {
     closed_subdir_file_path(dir, OsStr::new(SUMMARY_FILE))
 }
@@ -58,8 +61,8 @@ pub fn closed_subdir_file_path(dir: PathBuf, file: impl AsRef<OsStr>) -> PathBuf
         target.push(file);
 
         if !target.is_file() {
-            // Flush direntry caches for up to 3 levels of directory
-            // (snapshot subdir, epoch pile subdir, log subdir).
+            // Flush direntry caches for up to 5 levels of directory
+            // (snapshot subdir, epoch pile subdir, hour subdir, date subdir, log subdir).
             flush_dirs(target.parent(), 3);
         }
 
@@ -87,8 +90,9 @@ pub fn epoch_subdir_is_being_closed(dir: PathBuf) -> Result<bool> {
     let subdir = marker.parent().expect("we just pushed a child");
 
     // The existence of the SNAPSHOT_SUBDIR doesn't mean anything, so
-    // just create it unconditionally: that's simpler than trying to
-    // flush the NFS cache at each level of the hierarchy.
+    // just create the whole hierarchy unconditionally: that also
+    // happens to flush the NFS cache if we mistakenly think a
+    // directory is missing.
     //
     // Any error here will be bubbled up by the code downstream.
     let _ = std::fs::create_dir_all(subdir);
@@ -144,13 +148,12 @@ pub fn start_closing_epoch_subdir(
     // OK, it's late enough, make sure the snapshot directory exists,
     // then make everything (except that subdirectory) read-only.
 
-    // Flush the NFS cache.
-    let _ = subdir.read_dir()?.next();
-
     // The snapshot subdir must exist; that's the only guaranteed
     // postcondition when `now` is late enough.
     subdir.push(SNAPSHOT_SUBDIR);
     std::fs::create_dir_all(&subdir)?;
+
+    // Go back to the pile subdir with the log shard files.
     subdir.pop();
 
     fn make_read_only(target: &Path) -> Result<()> {
@@ -340,9 +343,7 @@ pub fn close_epoch_subdir(
     now: VouchedTime,
     options: CloseEpochOptions,
 ) -> Result<Option<time::PrimitiveDateTime>> {
-    let mut target = subdir.clone();
-    target.push(SNAPSHOT_SUBDIR);
-    target.push(SUMMARY_FILE);
+    let mut target = closed_subdir_summary_path(subdir.clone());
 
     // Quick check to see if we're already done here.
     let ret = if target.is_file() {
