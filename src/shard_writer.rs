@@ -1,3 +1,6 @@
+//! The `shard_writer` module defines the low-level logic to write and
+//! commit a single record to a shard in a pile directory (time
+//! bucket).
 use std::ffi::OsStr;
 use std::io::Result;
 use std::io::Write;
