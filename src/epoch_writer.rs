@@ -106,33 +106,43 @@ impl EpochWriter {
         now: VouchedTime,
         options: EpochWriterOptions,
     ) -> Result<EpochWriter> {
-        let (mut path, deadline) =
-            crate::construct_epoch_subdirectory(directory, now.get_local_time());
+        fn doit(
+            directory: PathBuf,
+            filename: &OsStr,
+            now: VouchedTime,
+            options: EpochWriterOptions,
+        ) -> Result<EpochWriter> {
+            let (mut path, deadline) =
+                crate::construct_epoch_subdirectory(directory, now.get_local_time());
 
-        // XXX: we should probably apply opt-in fsync here...
-        std::fs::create_dir_all(&path)?;
+            // XXX: we should probably apply opt-in fsync here...
+            std::fs::create_dir_all(&path)?;
 
-        path.push(filename.as_ref());
-        path.set_extension(crate::LOG_EXTENSION);
+            path.push(filename);
+            path.set_extension(crate::LOG_EXTENSION);
 
-        let dst = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)?;
+            let dst = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)?;
 
-        if options.fsync {
-            // fsync the directory to make sure the file is visible.
-            //
-            // XXX: maybe we should only do this if the file is empty?
-            std::fs::File::open(path.parent().unwrap_or(std::path::Path::new("/")))?.sync_all()?;
+            if options.fsync {
+                // fsync the directory to make sure the file is visible.
+                //
+                // XXX: maybe we should only do this if the file is empty?
+                std::fs::File::open(path.parent().unwrap_or(std::path::Path::new("/")))?
+                    .sync_all()?;
+            }
+
+            Ok(EpochWriter {
+                path,
+                dst,
+                deadline,
+                options,
+            })
         }
 
-        Ok(EpochWriter {
-            path,
-            dst,
-            deadline,
-            options,
-        })
+        doit(directory, filename.as_ref(), now, options)
     }
 
     /// Checks whether `now` is early enough compared to the deadline that we
