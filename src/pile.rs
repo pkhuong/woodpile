@@ -11,7 +11,7 @@ pub struct Pile {
     log_directory: Arc<PathBuf>,
     time_bucket: time::PrimitiveDateTime,
     progress_so_far: HashMap<PathBuf, u64>,
-    cache: BTreeSet<Record>,
+    cache: BTreeSet<Arc<Record>>,
     finalized: bool,
 }
 
@@ -56,13 +56,13 @@ impl Pile {
                 self.cache.clear();
                 self.progress_so_far.clear();
                 for record in reader {
-                    self.cache.insert(record?);
+                    self.cache.insert(Arc::new(record?));
                 }
                 self.finalized = true;
             }
             crate::pile_reader::PileReaderState::Peek(mut reader) => {
                 for record in reader.iter() {
-                    self.cache.insert(record?);
+                    self.cache.insert(Arc::new(record?));
                 }
 
                 for (key, offset) in reader.into_offsets() {
@@ -77,7 +77,7 @@ impl Pile {
     pub fn range(
         &self,
         range: &impl std::ops::RangeBounds<time::PrimitiveDateTime>,
-    ) -> impl Iterator<Item = &Record> {
+    ) -> impl Iterator<Item = &Arc<Record>> {
         use std::ops::Bound;
 
         fn min_record(timestamp: time::PrimitiveDateTime) -> Record {

@@ -251,7 +251,7 @@ impl Log {
     pub fn range(
         &self,
         range: impl std::ops::RangeBounds<time::PrimitiveDateTime>,
-    ) -> impl Iterator<Item = &Record> {
+    ) -> impl Iterator<Item = &Arc<Record>> {
         use itertools::Itertools;
 
         itertools::kmerge(self.piles.values().map(move |pile| pile.range(&range))).unique()
@@ -408,7 +408,7 @@ impl LogReader {
     pub fn range(
         &self,
         range: impl std::ops::RangeBounds<time::PrimitiveDateTime>,
-    ) -> impl Iterator<Item = &Record> {
+    ) -> impl Iterator<Item = &Arc<Record>> {
         self.0.range(range)
     }
 }
@@ -530,7 +530,7 @@ fn test_log_lifetime() {
 
         let records = reader
             .range(datetime!(2024-04-07 16:00:34)..=datetime!(2024-04-07 16:01:34))
-            .cloned()
+            .map(|x| (**x).clone())
             .collect::<Vec<_>>();
         assert_eq!(
             records,
@@ -583,6 +583,7 @@ fn test_log_lifetime() {
         assert_eq!(
             reader
                 .range(datetime!(2024-04-07 16:00:34)..=datetime!(2024-04-07 16:01:34))
+                .map(|x| &**x)
                 .collect::<Vec<&Record>>(),
             [&Record {
                 timestamp: datetime!(2024-04-07 16:01:32.0),
@@ -611,7 +612,7 @@ fn test_log_lifetime() {
 
         let records = reader
             .range(datetime!(2024-04-07 16:00:35)..=datetime!(2024-04-07 16:01:35))
-            .cloned()
+            .map(|x| (**x).clone())
             .collect::<Vec<_>>();
         assert_eq!(
             records,
@@ -776,7 +777,7 @@ fn test_log_lifetime() {
         // Old records aren't affected.
         let old_records = reader
             .range(datetime!(2024-04-07 16:00:35)..datetime!(2024-04-07 16:01:46))
-            .cloned()
+            .map(|x| (**x).clone())
             .collect::<Vec<_>>();
 
         assert_eq!(
@@ -815,7 +816,7 @@ fn test_log_lifetime() {
         assert_eq!(
             reader
                 .range(datetime!(2024-04-07 16:00:35)..=datetime!(2024-04-07 16:01:47))
-                .cloned()
+                .map(|x| (**x).clone())
                 .collect::<Vec<_>>(),
             [
                 Record {
@@ -860,7 +861,7 @@ fn test_log_lifetime() {
         assert_eq!(
             reader
                 .range(datetime!(2024-04-07 16:01:46)..=datetime!(2024-04-07 16:01:46))
-                .cloned()
+                .map(|x| (**x).clone())
                 .collect::<Vec<_>>(),
             [Record {
                 timestamp: datetime!(2024-04-07 16:01:46.0),
@@ -956,7 +957,7 @@ fn test_log_lifetime() {
         reader.prune_cache(datetime!(2024-04-07 16:01:40));
 
         assert_eq!(
-            reader.range(..).cloned().collect::<Vec<_>>(),
+            reader.range(..).map(|x| (**x).clone()).collect::<Vec<_>>(),
             [Record {
                 timestamp: datetime!(2024-04-07 16:01:46.0),
                 record_id: [10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10],
