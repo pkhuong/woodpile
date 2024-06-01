@@ -83,6 +83,13 @@ impl<R: std::io::Read> ShardReader<R> {
         }
     }
 
+    /// Returns the offset (in terms of bytes pulled from the file)
+    /// for the first byte of the most recently read (highest offset)
+    /// stuff sequence sentinel.
+    pub fn last_sentinel_offset(&self) -> u64 {
+        self.stream_reader.last_sentinel_offset()
+    }
+
     /// Attempts to decode the next record in the underlying reader.
     ///
     /// Returns a [`std::io::Error`] only when the underlying [`std::io::Read`] does.
@@ -143,6 +150,13 @@ impl<R: std::io::Read> ShardReader<R> {
 
             // We should be at EOF.
             assert!(consumer.is_empty());
+            // In test, double check with a read; even the above assertion
+            // should be redundant, but the next one definitely is.
+            #[cfg(test)]
+            {
+                let mut dst = [0u8];
+                assert_eq!(consumer.read(&mut dst).unwrap(), 0);
+            }
 
             if checksum == blake3::Hash::from_bytes(footer) {
                 let ret = Record {
