@@ -318,20 +318,20 @@ fn test_shard_writer_simple() {
     .unwrap();
 
     let temp = TestDir::temp();
-    let subdir = format!("./happy/2024-04-21/00/58:45-{:x}", 1713661132);
+    let subdir = format!("./simple/2024-04-21/00/58:45-{:x}", 1713661132);
     let deadline = time::OffsetDateTime::from_unix_timestamp(1713661132).unwrap();
     let deadline = time::PrimitiveDateTime::new(deadline.date(), deadline.time());
 
     assert_eq!(
         crate::construct_epoch_subdirectory(
-            Path::new("./happy").to_owned(),
+            Path::new("./simple").to_owned(),
             datetime!(2024-04-21 00:58:46.1)
         ),
         (Path::new(&subdir).to_owned(), deadline)
     );
 
     let mut writer = ShardWriter::open(
-        temp.path("./happy"),
+        temp.path("./simple"),
         "records",
         &[0u8; 16],
         now,
@@ -406,20 +406,20 @@ fn test_shard_writer_append() {
     .unwrap();
 
     let temp = TestDir::temp();
-    let subdir = format!("./happy/2024-04-21/00/58:45-{:x}", 1713661132);
+    let subdir = format!("./shard_writer_append/2024-04-21/00/58:45-{:x}", 1713661132);
     let deadline = time::OffsetDateTime::from_unix_timestamp(1713661132).unwrap();
     let deadline = time::PrimitiveDateTime::new(deadline.date(), deadline.time());
 
     assert_eq!(
         crate::construct_epoch_subdirectory(
-            Path::new("./happy").to_owned(),
+            Path::new("./shard_writer_append").to_owned(),
             datetime!(2024-04-21 00:58:46.1)
         ),
         (Path::new(&subdir).to_owned(), deadline)
     );
 
     let mut writer = ShardWriter::open(
-        temp.path("./happy"),
+        temp.path("./shard_writer_append"),
         "records",
         &[0u8; 16],
         now,
@@ -440,7 +440,7 @@ fn test_shard_writer_append() {
     .unwrap();
 
     let mut writer = ShardWriter::open(
-        temp.path("./happy"),
+        temp.path("./shard_writer_append"),
         "records",
         &[1u8; 16],
         then,
@@ -510,20 +510,20 @@ fn test_shard_writer_large() {
     .unwrap();
 
     let temp = TestDir::temp();
-    let subdir = format!("./happy/2024-04-21/00/58:45-{:x}", 1713661132);
+    let subdir = format!("./shard_writer_large/2024-04-21/00/58:45-{:x}", 1713661132);
     let deadline = time::OffsetDateTime::from_unix_timestamp(1713661132).unwrap();
     let deadline = time::PrimitiveDateTime::new(deadline.date(), deadline.time());
 
     assert_eq!(
         crate::construct_epoch_subdirectory(
-            Path::new("./happy").to_owned(),
+            Path::new("./shard_writer_large").to_owned(),
             datetime!(2024-04-21 00:58:46.1)
         ),
         (Path::new(&subdir).to_owned(), deadline)
     );
 
     let mut writer = ShardWriter::open(
-        temp.path("./happy"),
+        temp.path("./shard_writer_large"),
         "records",
         &[0u8; 16],
         now,
@@ -605,20 +605,23 @@ fn test_shard_writer_early_late() {
     .unwrap();
 
     let temp = TestDir::temp();
-    let subdir = format!("./happy/2024-04-21/00/58:45-{:x}", 1713661132);
+    let subdir = format!(
+        "./shard_writer_early_late/2024-04-21/00/58:45-{:x}",
+        1713661132
+    );
     let deadline = time::OffsetDateTime::from_unix_timestamp(1713661132).unwrap();
     let deadline = time::PrimitiveDateTime::new(deadline.date(), deadline.time());
 
     assert_eq!(
         crate::construct_epoch_subdirectory(
-            Path::new("./happy").to_owned(),
+            Path::new("./shard_writer_early_late").to_owned(),
             datetime!(2024-04-21 00:58:46.1)
         ),
         (Path::new(&subdir).to_owned(), deadline)
     );
 
     let mut writer = ShardWriter::open(
-        temp.path("./happy"),
+        temp.path("./shard_writer_early_late"),
         "records",
         &[0u8; 16],
         now,
@@ -656,20 +659,23 @@ fn test_shard_writer_late_late() {
     .unwrap();
 
     let temp = TestDir::temp();
-    let subdir = format!("./happy/2024-04-21/00/58:45-{:x}", 1713661132);
+    let subdir = format!(
+        "./shard_writer_late_late/2024-04-21/00/58:45-{:x}",
+        1713661132
+    );
     let deadline = time::OffsetDateTime::from_unix_timestamp(1713661132).unwrap();
     let deadline = time::PrimitiveDateTime::new(deadline.date(), deadline.time());
 
     assert_eq!(
         crate::construct_epoch_subdirectory(
-            Path::new("./happy").to_owned(),
+            Path::new("./shard_writer_late_late").to_owned(),
             datetime!(2024-04-21 00:58:46.1)
         ),
         (Path::new(&subdir).to_owned(), deadline)
     );
 
     let mut writer = ShardWriter::open(
-        temp.path("./happy"),
+        temp.path("./shard_writer_late_late"),
         "records",
         &[0u8; 16],
         now,
@@ -710,4 +716,11 @@ fn test_shard_writer_late_late() {
         .commit_with_false_alarm(now_provider)
         .expect("succeed early")
         .is_err());
+
+    // Let the Drop traits clean up
+    let temp_dir = temp.path(&subdir);
+    let mut perms = std::fs::metadata(&temp_dir).unwrap().permissions();
+    #[allow(clippy::permissions_set_readonly_false)]
+    perms.set_readonly(false);
+    std::fs::set_permissions(&temp_dir, perms).unwrap();
 }
