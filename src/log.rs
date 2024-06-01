@@ -147,6 +147,10 @@ impl Log {
         options: WriteOptions,
         populate: impl FnOnce(&mut dyn std::io::Write) -> Result<R>,
     ) -> Result<R> {
+        // On the write side, `ShardWriter` (via `EpochWriter`)
+        // blindly creates all files and directories that needs to
+        // exist, and nukes NFS caches when it must check for the
+        // existence of files.
         let mut writer = ShardWriter::open(
             (*self.log_directory).clone(),
             filename,
@@ -212,6 +216,10 @@ impl Log {
         now: VouchedTime,
         options: CacheOptions,
     ) -> Result<()> {
+        // On the read-side, `Pile` (via `PileReader`) flushes dirent caches
+        // when a file or directory is missing when it's expected to exist.
+        //
+        // We can thus be sure that ENOENT really means the data is absent.
         let lookback = lookback
             .max(time::Duration::ZERO)
             .saturating_add(crate::EPOCH_WRITE_DURATION);
@@ -294,6 +302,8 @@ impl Log {
         now: VouchedTime,
         options: CloseOptions,
     ) -> Result<Option<time::PrimitiveDateTime>> {
+        // `close_epoch_subdir` flushes dirent caches recursively to make sure absent
+        // directories or files truly are absent.
         crate::close::close_epoch_subdir(self.log_directory.join(suffix), now, options)
     }
 
