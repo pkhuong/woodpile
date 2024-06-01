@@ -1,6 +1,7 @@
 [workspace]
 
 members = [
+  "hcobs",
   "owning_iovec",
   "sliding_deque",
 ]
