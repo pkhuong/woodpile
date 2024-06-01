@@ -1,0 +1,10 @@
+[package]
+name = "sliding_deque"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+smallvec = "1"
+
+[lints]
+workspace = true

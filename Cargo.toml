@@ -1,0 +1,13 @@
+[workspace]
+
+members = [
+  "sliding_deque",
+]
+
+resolver = "2"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+
+[workspace.lints.rustdoc]
+missing_crate_level_docs = "warn"
