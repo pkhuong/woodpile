@@ -1,5 +1,6 @@
 //! The `shard_reader` module defines the low-level logic to
-//! decode and validate [`Record`]s from a single log file.
+//! decode and validate [`Record`]s from a single log shard file
+//! (i.e., part of a pile [time bucket] directory).
 use crate::hcobs::StreamReader;
 
 use std::fs::File;
