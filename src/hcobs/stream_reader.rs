@@ -21,6 +21,8 @@ const TEST_BLOCK_SIZE: Option<usize> = Some(3);
 pub struct StreamReader {
     iovec: OwningIovec<'static>,
     chunker: StreamChunker,
+    // Offset of the (first byte of the) last STUFF_SEQUENCE sentinel in `chunker`.
+    last_sentinel_offset: u64,
 }
 
 /// The [`StreamReader`] periodically invokes a function to determine
@@ -80,7 +82,7 @@ impl StreamChunker {
 
         assert!(self.buf.slice().len() >= 2);
 
-        if self.buf.slice()[0..2] == super::STUFF_SEQUENCE {
+        if self.buf.slice()[0..2] == STUFF_SEQUENCE {
             self.offset += 2;
             self.buf.skip_prefix(2);
             return Ok(Chunk::Sentinel(self.offset));
@@ -137,6 +139,13 @@ impl StreamReader {
         }
     }
 
+    /// Returns the offset (in terms of bytes pulled from a reader)
+    /// for the first byte of the most recently read (highest offset)
+    /// stuff sequence sentinel.
+    pub fn last_sentinel_offset(&self) -> u64 {
+        self.last_sentinel_offset
+    }
+
     /// Attempts to decode the next [`STUFF_SEQUENCE`] delimited record
     /// from `reader`.
     ///
@@ -182,6 +191,9 @@ impl StreamReader {
                     .pump(decoder.consumer().arena(), &mut reader, io_block_size)?
                 {
                     Chunk::Sentinel(offset) => {
+                        // The offset is the end byte.
+                        assert!(offset >= 2);
+                        self.last_sentinel_offset = offset - (STUFF_SEQUENCE.len() as u64);
                         match state {
                             State::SkipSentinel => range = offset..offset,
                             // We hit a sentinel, so the record is complete.
