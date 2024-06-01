@@ -60,24 +60,34 @@ impl ShardWriter {
         now: VouchedTime,
         options: ShardWriterOptions,
     ) -> Result<ShardWriter> {
-        let writer = EpochWriter::open(directory, filename, now, options)?;
-        let mut iovec = crate::OwningIovec::new();
-        iovec.push_copy(&STUFF_SEQUENCE);
+        fn doit(
+            directory: PathBuf,
+            filename: &OsStr,
+            logical_id: &[u8; 16],
+            now: VouchedTime,
+            options: ShardWriterOptions,
+        ) -> Result<ShardWriter> {
+            let writer = EpochWriter::open(directory, filename, now, options)?;
+            let mut iovec = crate::OwningIovec::new();
+            iovec.push_copy(&STUFF_SEQUENCE);
 
-        let mut ret = ShardWriter {
-            encoder: Encoder::new_from_iovec(iovec),
-            writer,
-            hasher: blake3::Hasher::new_keyed(&BLAKE3_KEY),
-        };
+            let mut ret = ShardWriter {
+                encoder: Encoder::new_from_iovec(iovec),
+                writer,
+                hasher: blake3::Hasher::new_keyed(&BLAKE3_KEY),
+            };
 
-        ret.write_impl(logical_id);
-        let ts: [u8; 16] = now
-            .get_local_time()
-            .assume_utc()
-            .unix_timestamp_nanos()
-            .to_le_bytes();
-        ret.write_impl(&ts);
-        Ok(ret)
+            ret.write_impl(logical_id);
+            let ts: [u8; 16] = now
+                .get_local_time()
+                .assume_utc()
+                .unix_timestamp_nanos()
+                .to_le_bytes();
+            ret.write_impl(&ts);
+            Ok(ret)
+        }
+
+        doit(directory, filename.as_ref(), logical_id, now, options)
     }
 
     /// Checks whether `now` is still before the shard file's deadline.
