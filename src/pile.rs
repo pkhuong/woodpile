@@ -59,7 +59,7 @@ impl Pile {
                     self.cache.insert(record?);
                 }
 
-                for (key, offset) in reader.into_offset() {
+                for (key, offset) in reader.into_offsets() {
                     self.progress_so_far.insert(key, offset);
                 }
             }

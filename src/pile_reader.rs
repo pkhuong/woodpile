@@ -318,7 +318,7 @@ impl PileReader {
     /// where we may find fresh records.
     ///
     /// Each PathBuf is relative to the pile directory.
-    pub fn into_offset(self) -> Vec<(PathBuf, u64)> {
+    pub fn into_offsets(self) -> Vec<(PathBuf, u64)> {
         self.source_files
     }
 
@@ -622,7 +622,7 @@ fn test_read_one_file_append() {
     // 2 bytes for the sentinel, 1 byte for stuffing, then 64 bytes metadata and 15 bytes payload.
     assert_eq!(reader.start_offsets()[0].1, 2 + 1 + 64 + 15);
 
-    let offsets: HashMap<_, _> = reader.start_offsets().iter().cloned().collect();
+    let offsets: HashMap<_, _> = reader.into_offsets().into_iter().collect();
 
     // Append garbage (looks like a bad record and a partial record).
     {
