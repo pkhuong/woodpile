@@ -70,7 +70,7 @@ impl Pile {
 
     pub fn range(
         &self,
-        range: impl std::ops::RangeBounds<time::PrimitiveDateTime>,
+        range: &impl std::ops::RangeBounds<time::PrimitiveDateTime>,
     ) -> impl Iterator<Item = &Record> {
         use std::ops::Bound;
 
