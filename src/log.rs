@@ -1,14 +1,19 @@
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::io::Result;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::pile::Pile;
 use crate::shard_writer::ShardWriter;
+use crate::VouchedTime;
 
 pub type Record = crate::pile_reader::Record;
 pub type WriteOptions = crate::shard_writer::ShardWriterOptions;
+pub type ReaderMode = crate::pile_reader::PileReaderMode;
 pub type CacheOptions = crate::pile_reader::PileReaderOptions;
+pub type CloseOptions = crate::close::CloseEpochOptions;
 
 /// A `Log` is the in-memory representation for a log directory, i.e.,
 /// for a bag of timestamped pile directories (one per time bucket).
@@ -46,10 +51,19 @@ pub struct LogWriter(Log);
 #[repr(transparent)]
 pub struct LogReader(Log);
 
+/// A `LogMaintainer` wraps a [`Log`] and exposes only the directory
+/// maintenance methods.
+///
+/// See [`Log`] for documentation.
+#[derive(Clone, Debug)]
+#[repr(transparent)]
+pub struct LogMaintainer(Log);
+
 impl From<Log> for LogWriter {
     #[inline(always)]
     fn from(value: Log) -> LogWriter {
-        LogWriter(value)
+        // We don't need the piles in a writer
+        LogWriter(Log::new(value.log_directory))
     }
 }
 
@@ -57,6 +71,14 @@ impl From<Log> for LogReader {
     #[inline(always)]
     fn from(value: Log) -> LogReader {
         LogReader(value)
+    }
+}
+
+impl From<Log> for LogMaintainer {
+    #[inline(always)]
+    fn from(value: Log) -> LogMaintainer {
+        // We don't need the piles in a maintainer
+        LogMaintainer(Log::new(value.log_directory))
     }
 }
 
@@ -73,7 +95,7 @@ impl Log {
     /// Creates a new `LogWriter` from the current log.
     #[inline(always)]
     pub fn get_writer(&self) -> LogWriter {
-        Log::new(self.log_directory.clone()).into()
+        Log::new(self.log_directory().clone()).into()
     }
 
     /// Converts a [`Log`] into a write-only [`LogWriter`].
@@ -83,6 +105,11 @@ impl Log {
 
     /// Converts a [`Log`] into a read-only [`LogReader`].
     pub fn into_reader(self) -> LogReader {
+        self.into()
+    }
+
+    /// Converts a [`Log`] into an idempotent [`LogMaintainer`].
+    pub fn into_maintainer(self) -> LogMaintainer {
         self.into()
     }
 
@@ -100,7 +127,7 @@ impl Log {
     /// The `logical_id` is the logical identifier for the record;
     /// that's passed straight through to the application.
     ///
-    /// The `now_provider` returns the current time as a [`crate::VouchedTime`].
+    /// The `now_provider` returns the current time as a [`VouchedTime`].
     /// The current time must track real time; the first call determines the
     /// record's timestamp.
     ///
@@ -116,9 +143,9 @@ impl Log {
         &self,
         filename: impl AsRef<std::ffi::OsStr>,
         logical_id: &[u8; 16],
-        mut now_provider: impl FnMut() -> crate::VouchedTime,
+        mut now_provider: impl FnMut() -> VouchedTime,
         options: WriteOptions,
-        populate: impl FnOnce(&dyn std::io::Write) -> Result<R>,
+        populate: impl FnOnce(&mut dyn std::io::Write) -> Result<R>,
     ) -> Result<R> {
         let mut writer = ShardWriter::open(
             (*self.log_directory).clone(),
@@ -146,7 +173,7 @@ impl Log {
     /// use the [`Log`] once [`Log::maintain_cache`] returns `Ok(())`.
     pub fn maintain_cache(
         &mut self,
-        now: crate::VouchedTime,
+        now: VouchedTime,
         lookback: time::Duration,
         options: CacheOptions,
     ) -> Result<()> {
@@ -182,7 +209,7 @@ impl Log {
         &mut self,
         end: time::PrimitiveDateTime,
         lookback: time::Duration,
-        now: crate::VouchedTime,
+        now: VouchedTime,
         options: CacheOptions,
     ) -> Result<()> {
         let lookback = lookback
@@ -209,6 +236,11 @@ impl Log {
             });
 
             pile.update(now, options)?;
+
+            if pile.is_at_initial_state() {
+                // No need to keep this guy around, it's just empty state.
+                self.piles.remove(&bucket);
+            }
         }
 
         Ok(())
@@ -218,11 +250,110 @@ impl Log {
     /// records in the [`Log`] with timestamps in `range`
     pub fn range(
         &self,
-        range: impl std::ops::RangeBounds<time::PrimitiveDateTime> + Copy,
+        range: impl std::ops::RangeBounds<time::PrimitiveDateTime>,
     ) -> impl Iterator<Item = &Record> {
         use itertools::Itertools;
 
-        itertools::kmerge(self.piles.values().map(|pile| pile.range(range))).unique()
+        itertools::kmerge(self.piles.values().map(move |pile| pile.range(&range))).unique()
+    }
+
+    /// Enumerates the epoch subdirs under this log, from newest to oldest.
+    ///
+    /// Each item is a pair of path suffix for the epoch subdir (i.e., date/hour/epoch),
+    /// and the time at which we can close that subdirectory.
+    ///
+    /// Use this in conjunction with [`Log::close_subdir`] to close
+    /// epochs in the background, before readers must block to do so
+    /// themselves.
+    pub fn enumerate_subdirs_lifo(
+        &self,
+    ) -> impl Iterator<Item = (PathBuf, time::PrimitiveDateTime)> {
+        self.enumerate_subdirs_impl(true)
+    }
+
+    /// Enumerates the epoch subdirs under this log, from oldest to newest.
+    ///
+    /// Each item is a pair of path suffix for the epoch subdir (i.e., date/hour/epoch),
+    /// and the time at which we can close that subdirectory.
+    ///
+    /// This method can be useful to perform background maintenance on old epochs.
+    pub fn enumerate_subdirs_fifo(
+        &self,
+    ) -> impl Iterator<Item = (PathBuf, time::PrimitiveDateTime)> {
+        self.enumerate_subdirs_impl(false)
+    }
+
+    /// Attempts to close the epoch subdir at path suffix `suffix`.
+    ///
+    /// On success, returns the time after which we should call `close_subdir` again
+    /// to complete the process, or `None` if the epoch subdirectory is now closed.
+    #[inline(always)]
+    pub fn close_subdir(
+        &self,
+        suffix: &Path,
+        now: VouchedTime,
+        options: CloseOptions,
+    ) -> Result<Option<time::PrimitiveDateTime>> {
+        crate::close::close_epoch_subdir(self.log_directory.join(suffix), now, options)
+    }
+
+    fn enumerate_subdirs_impl(
+        &self,
+        reverse: bool,
+    ) -> impl Iterator<Item = (PathBuf, time::PrimitiveDateTime)> {
+        fn list_subdirs(path: &Path) -> Result<Vec<OsString>> {
+            Ok(path
+                .read_dir()?
+                .flatten()
+                .filter_map(|dirent| {
+                    if matches!(dirent.file_type(), Ok(ft) if ft.is_dir()) {
+                        Some(dirent.file_name())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>())
+        }
+
+        fn sort_files(mut files: Vec<OsString>, reverse: bool) -> Vec<OsString> {
+            files.sort();
+            if reverse {
+                files.reverse();
+            }
+
+            files
+        }
+
+        let dates = list_subdirs(&self.log_directory).unwrap_or_default();
+        let dates = sort_files(dates, reverse);
+
+        let cursor = self.log_directory.clone();
+
+        dates.into_iter().flat_map(move |date| {
+            let cursor = cursor.join(&date);
+            let suffix = PathBuf::from(date);
+            let hours = list_subdirs(&cursor).unwrap_or_default();
+            let hours = sort_files(hours, reverse);
+
+            hours.into_iter().flat_map(move |hour| {
+                let mut cursor = cursor.join(&hour);
+                let suffix = suffix.join(&hour);
+
+                let epochs = list_subdirs(&cursor).unwrap_or_default();
+                let epochs = sort_files(epochs, reverse);
+
+                epochs.into_iter().filter_map(move |epoch| {
+                    cursor.push(&epoch);
+                    let ret = match crate::get_epoch_close_time(&cursor) {
+                        Ok(deadline) => Some((suffix.join(epoch), deadline)),
+                        Err(_) => None,
+                    };
+
+                    cursor.pop();
+                    ret
+                })
+            })
+        })
     }
 }
 
@@ -233,9 +364,9 @@ impl LogWriter {
         &self,
         filename: impl AsRef<std::ffi::OsStr>,
         logical_id: &[u8; 16],
-        now_provider: impl FnMut() -> crate::VouchedTime,
+        now_provider: impl FnMut() -> VouchedTime,
         options: WriteOptions,
-        populate: impl FnOnce(&dyn std::io::Write) -> Result<R>,
+        populate: impl FnOnce(&mut dyn std::io::Write) -> Result<R>,
     ) -> Result<R> {
         self.0
             .write_or_panic(filename, logical_id, now_provider, options, populate)
@@ -247,7 +378,7 @@ impl LogReader {
     #[inline(always)]
     pub fn maintain_cache(
         &mut self,
-        now: crate::VouchedTime,
+        now: VouchedTime,
         lookback: time::Duration,
         options: CacheOptions,
     ) -> Result<()> {
@@ -266,7 +397,7 @@ impl LogReader {
         &mut self,
         end: time::PrimitiveDateTime,
         lookback: time::Duration,
-        now: crate::VouchedTime,
+        now: VouchedTime,
         options: CacheOptions,
     ) -> Result<()> {
         self.0.update_cache(end, lookback, now, options)
@@ -276,8 +407,615 @@ impl LogReader {
     #[inline(always)]
     pub fn range(
         &self,
-        range: impl std::ops::RangeBounds<time::PrimitiveDateTime> + Copy,
+        range: impl std::ops::RangeBounds<time::PrimitiveDateTime>,
     ) -> impl Iterator<Item = &Record> {
         self.0.range(range)
+    }
+}
+
+impl LogMaintainer {
+    /// See [`Log::enumerate_subdirs_lifo`].
+    #[inline(always)]
+    pub fn enumerate_subdirs_lifo(
+        &self,
+    ) -> impl Iterator<Item = (PathBuf, time::PrimitiveDateTime)> {
+        self.0.enumerate_subdirs_lifo()
+    }
+
+    /// See [`Log::enumerate_subdirs_fifo`].
+    #[inline(always)]
+    pub fn enumerate_subdirs_fifo(
+        &self,
+    ) -> impl Iterator<Item = (PathBuf, time::PrimitiveDateTime)> {
+        self.0.enumerate_subdirs_fifo()
+    }
+
+    /// See [`Log::close_subdir`].
+    #[inline(always)]
+    pub fn close_subdir(
+        &self,
+        suffix: &Path,
+        now: VouchedTime,
+        options: CloseOptions,
+    ) -> Result<Option<time::PrimitiveDateTime>> {
+        self.0.close_subdir(suffix, now, options)
+    }
+}
+
+// Smoke test the happy path for all 3 facets (writer, reader, maintainer).
+#[test]
+fn test_log_lifetime() {
+    use test_dir::{DirBuilder, FileType, TestDir};
+    use time::macros::datetime;
+
+    let temp = TestDir::temp().create("test_log_lifetime", FileType::Dir);
+
+    let vouch_params = raffle::VouchingParameters::parse_or_die(
+        "VOUCH-773ec2a0e62c20cd-f9e079b78e895091-fc1da7b1b77c57cb-594b9cce3091464a",
+    );
+
+    let log = Log::new(Arc::new(temp.path("test_log_lifetime")));
+
+    let writer1 = log.get_writer();
+    let maintainer = log.clone().into_maintainer();
+    let mut reader = log.into_reader();
+    let writer2 = Log::new(Arc::new(temp.path("test_log_lifetime"))).into_writer();
+
+    // First chunk of write
+    {
+        let begin = VouchedTime::new(
+            datetime!(2024-04-07 16:01:32),
+            1712505692000,
+            vouch_params.vouch(1712505692000),
+        )
+        .unwrap();
+
+        // Easy case works
+        writer1
+            .write_or_panic(
+                "writer1",
+                &[1u8; 16],
+                || begin,
+                Default::default(),
+                |record| record.write_all(b"test"),
+            )
+            .expect("write must succeed");
+
+        // Errors are propagated and the record will not be comitted.
+        assert!(writer1
+            .write_or_panic(
+                "writer1",
+                &[2u8; 16],
+                || begin,
+                Default::default(),
+                |record| -> Result<()> {
+                    record.write_all(b"test2")?;
+                    Err(std::io::Error::other("fail"))
+                }
+            )
+            .is_err());
+
+        let late = VouchedTime::new(
+            datetime!(2024-04-07 16:01:42),
+            1712505702000,
+            vouch_params.vouch(1712505702000),
+        )
+        .unwrap();
+
+        // A late write should fail gracefully.
+        let mut times = vec![late, begin];
+        assert!(writer1
+            .write_or_panic(
+                "writer1",
+                &[3u8; 16],
+                || times.pop().unwrap_or(late),
+                Default::default(),
+                |record| { record.write_all(b"test3") }
+            )
+            .is_err());
+    }
+
+    // Read a little
+    {
+        let begin = VouchedTime::new(
+            datetime!(2024-04-07 16:01:34),
+            1712505694000,
+            vouch_params.vouch(1712505694000),
+        )
+        .unwrap();
+
+        reader
+            .maintain_cache(begin, time::Duration::minutes(1), Default::default())
+            .expect("should work");
+
+        let records = reader
+            .range(datetime!(2024-04-07 16:00:34)..=datetime!(2024-04-07 16:01:34))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            records,
+            [Record {
+                timestamp: datetime!(2024-04-07 16:01:32.0),
+                record_id: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                checksum: [
+                    164, 130, 187, 134, 115, 241, 3, 205, 22, 221, 95, 132, 32, 127, 9, 92, 37, 43,
+                    159, 6, 35, 182, 126, 206, 70, 63, 247, 35, 104, 218, 181, 114
+                ],
+                payload: Box::new([116, 101, 115, 116])
+            }]
+        );
+        assert_eq!(&[116, 101, 115, 116], b"test");
+    }
+
+    // Write some more
+    {
+        let begin = VouchedTime::new(
+            datetime!(2024-04-07 16:01:33),
+            1712505692000,
+            vouch_params.vouch(1712505692000),
+        )
+        .unwrap();
+
+        // Easy case works
+        writer1
+            .write_or_panic(
+                "writer1",
+                &[4u8; 16],
+                || begin,
+                Default::default(),
+                |record| record.write_all(b"test4"),
+            )
+            .expect("write must succeed");
+
+        writer2
+            .write_or_panic(
+                "writer2",
+                &[5u8; 16],
+                || begin,
+                Default::default(),
+                |record| record.write_all(b"test5"),
+            )
+            .expect("write must succeed");
+    }
+
+    // Re-reading without maintaining the cache doesn't pick up the new records.
+    {
+        assert_eq!(
+            reader
+                .range(datetime!(2024-04-07 16:00:34)..=datetime!(2024-04-07 16:01:34))
+                .collect::<Vec<&Record>>(),
+            [&Record {
+                timestamp: datetime!(2024-04-07 16:01:32.0),
+                record_id: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                checksum: [
+                    164, 130, 187, 134, 115, 241, 3, 205, 22, 221, 95, 132, 32, 127, 9, 92, 37, 43,
+                    159, 6, 35, 182, 126, 206, 70, 63, 247, 35, 104, 218, 181, 114
+                ],
+                payload: Box::new([116, 101, 115, 116])
+            }]
+        );
+    }
+
+    // Read a little more
+    {
+        let begin = VouchedTime::new(
+            datetime!(2024-04-07 16:01:35),
+            1712505694000,
+            vouch_params.vouch(1712505694000),
+        )
+        .unwrap();
+
+        reader
+            .maintain_cache(begin, time::Duration::minutes(1), Default::default())
+            .expect("should work");
+
+        let records = reader
+            .range(datetime!(2024-04-07 16:00:35)..=datetime!(2024-04-07 16:01:35))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            records,
+            [
+                Record {
+                    timestamp: datetime!(2024-04-07 16:01:32.0),
+                    record_id: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                    checksum: [
+                        164, 130, 187, 134, 115, 241, 3, 205, 22, 221, 95, 132, 32, 127, 9, 92, 37,
+                        43, 159, 6, 35, 182, 126, 206, 70, 63, 247, 35, 104, 218, 181, 114
+                    ],
+                    payload: Box::new([116, 101, 115, 116])
+                },
+                Record {
+                    timestamp: datetime!(2024-04-07 16:01:33.0),
+                    record_id: [4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4],
+                    checksum: [
+                        78, 97, 63, 18, 7, 97, 175, 231, 72, 36, 130, 229, 209, 213, 118, 79, 24,
+                        64, 91, 218, 220, 154, 123, 217, 60, 243, 55, 196, 17, 155, 175, 87
+                    ],
+                    payload: Box::new([116, 101, 115, 116, 52])
+                },
+                Record {
+                    timestamp: datetime!(2024-04-07 16:01:33.0),
+                    record_id: [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5],
+                    checksum: [
+                        105, 86, 211, 190, 179, 234, 209, 73, 17, 132, 195, 35, 230, 108, 199, 17,
+                        175, 103, 243, 93, 112, 146, 132, 98, 222, 177, 30, 239, 64, 209, 66, 28
+                    ],
+                    payload: Box::new([116, 101, 115, 116, 53])
+                }
+            ]
+        );
+        assert_eq!(&[116, 101, 115, 116], b"test");
+        assert_eq!(&[116, 101, 115, 116, 52], b"test4");
+        assert_eq!(&[116, 101, 115, 116, 53], b"test5");
+    }
+
+    // Maintenance interface should see exactly one subdir
+    {
+        assert_eq!(
+            maintainer.enumerate_subdirs_lifo().collect::<Vec<_>>(),
+            vec![(
+                "2024-04-07/16/01:30-6612c361".into(),
+                datetime!(2024-04-07 16:01:37.0)
+            )]
+        );
+        assert_eq!(
+            maintainer.enumerate_subdirs_fifo().collect::<Vec<_>>(),
+            vec![(
+                "2024-04-07/16/01:30-6612c361".into(),
+                datetime!(2024-04-07 16:01:37.0)
+            )]
+        );
+    }
+
+    // Write again, this time in a new epoch
+    {
+        let mid = VouchedTime::new(
+            datetime!(2024-04-07 16:01:46),
+            1712505706000,
+            vouch_params.vouch(1712505706000),
+        )
+        .unwrap();
+
+        // Easy case works
+        writer2
+            .write_or_panic(
+                "writer2",
+                &[10u8; 16],
+                || mid,
+                Default::default(),
+                |record| record.write_all(b"mid"),
+            )
+            .expect("write must succeed");
+    }
+
+    // Now exercise the maintenance interface with two pile subdirs.
+    {
+        assert_eq!(
+            maintainer.enumerate_subdirs_lifo().collect::<Vec<_>>(),
+            vec![
+                (
+                    "2024-04-07/16/01:45-6612c370".into(),
+                    datetime!(2024-04-07 16:01:52.0)
+                ),
+                (
+                    "2024-04-07/16/01:30-6612c361".into(),
+                    datetime!(2024-04-07 16:01:37.0)
+                )
+            ]
+        );
+        assert_eq!(
+            maintainer.enumerate_subdirs_fifo().collect::<Vec<_>>(),
+            vec![
+                (
+                    "2024-04-07/16/01:30-6612c361".into(),
+                    datetime!(2024-04-07 16:01:37.0)
+                ),
+                (
+                    "2024-04-07/16/01:45-6612c370".into(),
+                    datetime!(2024-04-07 16:01:52.0)
+                ),
+            ]
+        );
+
+        // Close the first epoch, but too early.
+        assert_eq!(
+            maintainer
+                .close_subdir(
+                    Path::new("2024-04-07/16/01:30-6612c361"),
+                    VouchedTime::new(
+                        datetime!(2024-04-07 16:01:39.1),
+                        1712505699000,
+                        vouch_params.vouch(1712505699000),
+                    )
+                    .unwrap(),
+                    Default::default()
+                )
+                .unwrap(),
+            Some(datetime!(2024-04-07 16:01:39.9))
+        );
+
+        // Too early, can't close yet.
+        assert!(!crate::close::epoch_subdir_is_being_closed(
+            temp.path("test_log_lifetime/2024-04-07/16/01:30-6612c361")
+        )
+        .unwrap());
+
+        // And now it's late enough to close.
+        assert_eq!(
+            maintainer
+                .close_subdir(
+                    Path::new("2024-04-07/16/01:30-6612c361"),
+                    VouchedTime::new(
+                        datetime!(2024-04-07 16:01:40),
+                        1712505700000,
+                        vouch_params.vouch(1712505700000),
+                    )
+                    .unwrap(),
+                    Default::default()
+                )
+                .unwrap(),
+            None
+        );
+    }
+
+    // Update the reader again
+    {
+        // Update the cache
+        let begin = VouchedTime::new(
+            datetime!(2024-04-07 16:01:46),
+            1712505706000,
+            vouch_params.vouch(1712505706000),
+        )
+        .unwrap();
+
+        reader
+            .maintain_cache(begin, time::Duration::minutes(1), Default::default())
+            .expect("should work");
+
+        // Old records aren't affected.
+        let old_records = reader
+            .range(datetime!(2024-04-07 16:00:35)..datetime!(2024-04-07 16:01:46))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            old_records,
+            [
+                Record {
+                    timestamp: datetime!(2024-04-07 16:01:32.0),
+                    record_id: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                    checksum: [
+                        164, 130, 187, 134, 115, 241, 3, 205, 22, 221, 95, 132, 32, 127, 9, 92, 37,
+                        43, 159, 6, 35, 182, 126, 206, 70, 63, 247, 35, 104, 218, 181, 114
+                    ],
+                    payload: Box::new([116, 101, 115, 116])
+                },
+                Record {
+                    timestamp: datetime!(2024-04-07 16:01:33.0),
+                    record_id: [4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4],
+                    checksum: [
+                        78, 97, 63, 18, 7, 97, 175, 231, 72, 36, 130, 229, 209, 213, 118, 79, 24,
+                        64, 91, 218, 220, 154, 123, 217, 60, 243, 55, 196, 17, 155, 175, 87
+                    ],
+                    payload: Box::new([116, 101, 115, 116, 52])
+                },
+                Record {
+                    timestamp: datetime!(2024-04-07 16:01:33.0),
+                    record_id: [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5],
+                    checksum: [
+                        105, 86, 211, 190, 179, 234, 209, 73, 17, 132, 195, 35, 230, 108, 199, 17,
+                        175, 103, 243, 93, 112, 146, 132, 98, 222, 177, 30, 239, 64, 209, 66, 28
+                    ],
+                    payload: Box::new([116, 101, 115, 116, 53])
+                }
+            ]
+        );
+
+        assert_eq!(
+            reader
+                .range(datetime!(2024-04-07 16:00:35)..=datetime!(2024-04-07 16:01:47))
+                .cloned()
+                .collect::<Vec<_>>(),
+            [
+                Record {
+                    timestamp: datetime!(2024-04-07 16:01:32.0),
+                    record_id: [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1],
+                    checksum: [
+                        164, 130, 187, 134, 115, 241, 3, 205, 22, 221, 95, 132, 32, 127, 9, 92, 37,
+                        43, 159, 6, 35, 182, 126, 206, 70, 63, 247, 35, 104, 218, 181, 114
+                    ],
+                    payload: Box::new([116, 101, 115, 116])
+                },
+                Record {
+                    timestamp: datetime!(2024-04-07 16:01:33.0),
+                    record_id: [4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4],
+                    checksum: [
+                        78, 97, 63, 18, 7, 97, 175, 231, 72, 36, 130, 229, 209, 213, 118, 79, 24,
+                        64, 91, 218, 220, 154, 123, 217, 60, 243, 55, 196, 17, 155, 175, 87
+                    ],
+                    payload: Box::new([116, 101, 115, 116, 52])
+                },
+                Record {
+                    timestamp: datetime!(2024-04-07 16:01:33.0),
+                    record_id: [5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5, 5],
+                    checksum: [
+                        105, 86, 211, 190, 179, 234, 209, 73, 17, 132, 195, 35, 230, 108, 199, 17,
+                        175, 103, 243, 93, 112, 146, 132, 98, 222, 177, 30, 239, 64, 209, 66, 28
+                    ],
+                    payload: Box::new([116, 101, 115, 116, 53])
+                },
+                Record {
+                    timestamp: datetime!(2024-04-07 16:01:46.0),
+                    record_id: [10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10],
+                    checksum: [
+                        35, 114, 148, 92, 141, 41, 22, 156, 159, 183, 70, 80, 194, 52, 15, 210, 78,
+                        132, 1, 123, 250, 146, 24, 38, 28, 154, 249, 233, 78, 187, 138, 119
+                    ],
+                    payload: Box::new([109, 105, 100])
+                },
+            ]
+        );
+
+        assert_eq!(
+            reader
+                .range(datetime!(2024-04-07 16:01:46)..=datetime!(2024-04-07 16:01:46))
+                .cloned()
+                .collect::<Vec<_>>(),
+            [Record {
+                timestamp: datetime!(2024-04-07 16:01:46.0),
+                record_id: [10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10],
+                checksum: [
+                    35, 114, 148, 92, 141, 41, 22, 156, 159, 183, 70, 80, 194, 52, 15, 210, 78,
+                    132, 1, 123, 250, 146, 24, 38, 28, 154, 249, 233, 78, 187, 138, 119
+                ],
+                payload: Box::new([109, 105, 100])
+            }]
+        );
+    }
+
+    // The reader should detect the need to close super old epoch subdirs.
+    {
+        let initial_records = reader.range(..).cloned().collect::<Vec<_>>();
+
+        // Initially, the second subdir is open
+        assert!(!crate::close::epoch_subdir_is_being_closed(
+            temp.path("test_log_lifetime/2024-04-07/16/01:45-6612c370")
+        )
+        .unwrap());
+
+        // The new epoch subdir closes at 01:50, 01:54.9 for the clock error budget.
+        // Add 9 seconds, and we should be ready to close at 02:03.9, but not earlier.
+        let late = VouchedTime::new(
+            datetime!(2024-04-07 16:02:03),
+            1712505733000,
+            vouch_params.vouch(1712505733000),
+        )
+        .unwrap();
+
+        reader
+            .update_cache(
+                late.get_local_time(),
+                time::Duration::minutes(1),
+                late,
+                CacheOptions {
+                    mode: ReaderMode::ReadOnly,
+                    ..Default::default()
+                },
+            )
+            .expect("should not need to close");
+
+        assert!(!crate::close::epoch_subdir_is_being_closed(
+            temp.path("test_log_lifetime/2024-04-07/16/01:45-6612c370")
+        )
+        .unwrap());
+        let late = VouchedTime::new(
+            datetime!(2024-04-07 16:02:04),
+            1712505734000,
+            vouch_params.vouch(1712505734000),
+        )
+        .unwrap();
+
+        // We have to close, but can't.  A read-only reader should error out.
+        assert!(reader
+            .update_cache(
+                late.get_local_time(),
+                time::Duration::minutes(1),
+                late,
+                CacheOptions {
+                    mode: ReaderMode::ReadOnly,
+                    force_close_grace_period: time::Duration::seconds(2),
+                    ..Default::default()
+                }
+            )
+            .is_err());
+
+        reader
+            .update_cache(
+                late.get_local_time(),
+                time::Duration::minutes(1),
+                late,
+                Default::default(),
+            )
+            .expect("should work");
+
+        assert!(crate::close::epoch_subdir_is_being_closed(
+            temp.path("test_log_lifetime/2024-04-07/16/01:45-6612c370")
+        )
+        .unwrap());
+
+        // No impact on the contents.
+        assert_eq!(
+            initial_records,
+            reader.range(..).cloned().collect::<Vec<_>>()
+        );
+    }
+
+    // Drop old records from the reader
+    {
+        reader.prune_cache(datetime!(2024-04-07 16:01:40));
+
+        assert_eq!(
+            reader.range(..).cloned().collect::<Vec<_>>(),
+            [Record {
+                timestamp: datetime!(2024-04-07 16:01:46.0),
+                record_id: [10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10],
+                checksum: [
+                    35, 114, 148, 92, 141, 41, 22, 156, 159, 183, 70, 80, 194, 52, 15, 210, 78,
+                    132, 1, 123, 250, 146, 24, 38, 28, 154, 249, 233, 78, 187, 138, 119
+                ],
+                payload: Box::new([109, 105, 100])
+            }]
+        );
+
+        assert_eq!(&[109, 105, 100], b"mid");
+
+        // And now an exclusive lower bound won't find the record.
+        assert_eq!(
+            reader
+                .range((
+                    std::ops::Bound::Excluded(datetime!(2024-04-07 16:01:46.0)),
+                    std::ops::Bound::Unbounded
+                ))
+                .cloned()
+                .collect::<Vec<_>>(),
+            []
+        );
+    }
+
+    // Create some garbage files and directories
+    {
+        std::fs::write(temp.path("test_log_lifetime/garbage.txt"), b"").expect("should succeed");
+        std::fs::write(temp.path("test_log_lifetime/2024-04-07/garbage.txt"), b"")
+            .expect("should succeed");
+        std::fs::create_dir_all(temp.path("test_log_lifetime/2024-04-07/16/01:30-corrupt"))
+            .expect("should succeed");
+
+        // and now listing the epoch subdirs shouldn't be affected.
+        assert_eq!(
+            maintainer.enumerate_subdirs_lifo().collect::<Vec<_>>(),
+            vec![
+                (
+                    "2024-04-07/16/01:45-6612c370".into(),
+                    datetime!(2024-04-07 16:01:52.0)
+                ),
+                (
+                    "2024-04-07/16/01:30-6612c361".into(),
+                    datetime!(2024-04-07 16:01:37.0)
+                )
+            ]
+        );
+    }
+
+    // Let the drop handler clean up.
+    for subdir in [
+        "test_log_lifetime/2024-04-07/16/01:45-6612c370",
+        "test_log_lifetime/2024-04-07/16/01:30-6612c361",
+    ] {
+        let temp_dir = temp.path(subdir);
+        let mut perms = std::fs::metadata(&temp_dir).unwrap().permissions();
+        #[allow(clippy::permissions_set_readonly_false)]
+        perms.set_readonly(false);
+        std::fs::set_permissions(&temp_dir, perms).unwrap();
     }
 }

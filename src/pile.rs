@@ -26,6 +26,12 @@ impl Pile {
         }
     }
 
+    // Determines whether the pile is in the same state as a newly created instance.
+    #[inline(always)]
+    pub fn is_at_initial_state(&self) -> bool {
+        self.cache.is_empty() & self.progress_so_far.is_empty() & !self.finalized
+    }
+
     pub fn update(
         &mut self,
         now: crate::VouchedTime,
