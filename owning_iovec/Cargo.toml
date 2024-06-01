@@ -1,0 +1,14 @@
+[package]
+name = "owning_iovec"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+sliding_deque = { path = "../sliding_deque" }
+smallvec = "1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"  # for `struct iovec`
+
+[lints]
+workspace = true
