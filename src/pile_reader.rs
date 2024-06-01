@@ -1,3 +1,6 @@
+//! The `pile_reader` module defines the low-level logic to (re)read
+//! from all the log shard files in a given pile (time bucket)
+//! directory.
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Result;
@@ -217,6 +220,19 @@ impl PileReader {
         let start_offsets = start_offsets.unwrap_or(&empty);
         let (pile_dir, write_deadline) = crate::construct_epoch_subdirectory(log_directory, time);
 
+        // Generating the path for the summary file also flushes the NFS caches if
+        // necessary (just enough so we don't get spurious ENOENT on the hierarchy).
+        let summary_path = crate::close::closed_subdir_summary_path(pile_dir.clone());
+
+        // Handle a missing directory like an empty pile.
+        if matches!(pile_dir.metadata(), Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+            return Ok(PileReaderState::Peek(PileReader::new_from_source_files(
+                pile_dir,
+                vec![],
+                Some(options.max_record_size),
+            )));
+        }
+
         let close_time = write_deadline
             .saturating_add(crate::EPOCH_WRITE_LEEWAY)
             .saturating_add(crate::CLOCK_ERROR_BOUND)
@@ -240,24 +256,21 @@ impl PileReader {
             )?;
         }
 
+        let mut logs: Vec<(PathBuf, u64)> = Vec::new();
+
         let mut pile_dir_dirents = pile_dir.read_dir()?.peekable();
         // Force an initial read, which should reliably flush any
         // cached NFS handle.
         let _ = pile_dir_dirents.peek();
 
-        let mut logs: Vec<(PathBuf, u64)> = Vec::new();
-
         // See if we have a summary file.
-        {
-            let summary_path = crate::close::closed_subdir_summary_path(pile_dir.clone());
-            if summary_path.is_file() {
-                let path = summary_path
-                    .strip_prefix(&pile_dir)
-                    .expect("summary file must be under pile dir")
-                    .to_path_buf();
-                let start_offset = start_offsets.get(&path).copied().unwrap_or(0);
-                logs.push((path, start_offset));
-            }
+        if summary_path.is_file() {
+            let path = summary_path
+                .strip_prefix(&pile_dir)
+                .expect("summary file must be under pile dir")
+                .to_path_buf();
+            let start_offset = start_offsets.get(&path).copied().unwrap_or(0);
+            logs.push((path, start_offset));
         }
 
         // If we have one path in the `logs` vector, we have a stable
@@ -307,6 +320,13 @@ impl PileReader {
     /// Each PathBuf is relative to the pile directory.
     pub fn into_offset(self) -> Vec<(PathBuf, u64)> {
         self.source_files
+    }
+
+    /// Returns whether the pile directory is empty.
+    ///
+    /// N.B., a non-empty `PileReader` may yield 0 record in the end.
+    pub fn is_empty(&self) -> bool {
+        self.source_files.is_empty()
     }
 
     /// Attempts to decode the next record in the pile.  Returns
@@ -463,6 +483,55 @@ fn test_read_one_file() {
             ],
             payload: Box::from(&b"test contents 1"[..])
         }]
+    );
+
+    assert!(std::convert::TryInto::<StablePileReader>::try_into(reader).is_err());
+}
+
+/// Read from an inexistent epoch.
+#[cfg(not(miri))]
+#[test]
+fn test_read_empty() {
+    use test_dir::{DirBuilder, FileType, TestDir};
+    use time::macros::datetime;
+
+    let temp = TestDir::temp().create("test_read_one_file", FileType::Dir);
+
+    let vouch_params = raffle::VouchingParameters::parse_or_die(
+        "VOUCH-773ec2a0e62c20cd-f9e079b78e895091-fc1da7b1b77c57cb-594b9cce3091464a",
+    );
+
+    let begin = crate::VouchedTime::new(
+        datetime!(2024-04-07 16:01:32),
+        1712505692000,
+        vouch_params.vouch(1712505692000),
+    )
+    .unwrap();
+
+    let read_time = crate::VouchedTime::new(
+        datetime!(2024-04-07 16:01:38), // Writes should stop :39
+        1712505698000,
+        vouch_params.vouch(1712505698000),
+    )
+    .unwrap();
+    let mut reader = PileReader::open(
+        temp.path("test_read_one_file"),
+        begin.get_local_time(),
+        read_time,
+        Default::default(),
+        None,
+    )
+    .expect("open should succeed");
+
+    assert!(reader.is_empty());
+
+    assert!(matches!(&reader, PileReaderState::Peek(_)));
+
+    assert_eq!(
+        (&mut reader)
+            .collect::<Result<Vec<_>>>()
+            .expect("should succeed"),
+        vec![]
     );
 
     assert!(std::convert::TryInto::<StablePileReader>::try_into(reader).is_err());
