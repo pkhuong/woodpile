@@ -4,6 +4,7 @@ members = [
   "hcobs",
   "owning_iovec",
   "sliding_deque",
+  "vouched_time",
 ]
 
 resolver = "2"
