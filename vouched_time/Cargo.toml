@@ -1,0 +1,17 @@
+[package]
+name = "vouched_time"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+raffle = "0.0.1"
+# https://users.rust-lang.org/t/the-state-of-time-in-rust-leaps-and-bounds/107620
+# we only need UTC, and don't really care what happens with leap seconds.
+time = "0.3"
+
+[dev-dependencies]
+time = { version = "0.3", features = ["macros"]}
+test_dir = "0.2"
+
+[lints]
+workspace = true
