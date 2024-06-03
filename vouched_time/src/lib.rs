@@ -10,10 +10,14 @@
 //! The source of trusted base times could be a [Roughtime server](https://datatracker.ietf.org/doc/draft-ietf-ntp-roughtime/),
 //! or a local [ClockBound])https://github.com/aws/clock-bound) daemon
 //! (neither option is implemented yet).
+mod atomic_base_time;
+
 use std::io::Result;
 
 #[cfg(test)]
 use time::macros::datetime;
+
+pub use atomic_base_time::AtomicBaseTime;
 
 /// We allow times that are at most slightly less than 3 seconds (3000
 /// ms) ahead of the vouched time.  This tolerance is relatively tight
