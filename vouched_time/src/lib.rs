@@ -1,16 +1,23 @@
-//! The `vouched_time` crate exposes the [`VouchedTime`] type, a
-//! wrapper around a trusted base time, a [`raffle::Voucher`] as
-//! a weak witness that the base time deserves our trust, and a
-//! presumably more up-to-date [`time::PrimitiveDateTime`] local time.
+//! The `vouched_time` crate exposes the [`VouchedTime`] type, a wrapper
+//! around a trusted base time, a [`raffle::Voucher`] as a weak witness that
+//! the base time deserves our trust, and a presumably more up-to-date
+//! [`time::PrimitiveDateTime`] local time.
 //!
-//! It is meant to help time-based logic systems detect innocent bugs
-//! in time handling, especially in protocols where when generating
-//! times far in the future can result in hard to debug issues.
+//! It is meant to help time-based logic systems detect innocent bugs in time
+//! handling, especially in protocols where when generating times far in the
+//! future can result in hard to debug issues.
 //!
-//! The source of trusted base times could be a [Roughtime server](https://datatracker.ietf.org/doc/draft-ietf-ntp-roughtime/),
-//! or a local [ClockBound])https://github.com/aws/clock-bound) daemon
-//! (neither option is implemented yet).
+//! The source of trusted base times could be a [Roughtime
+//! server](https://datatracker.ietf.org/doc/draft-ietf-ntp-roughtime/), or a
+//! local [ClockBound](https://github.com/aws/clock-bound) daemon (neither
+//! option is implemented yet).
+//!
+//! For now the only trusted base time source is a trusted filesystem's ctimes
+//!([`nfs_voucher`]): we want to use vouched times in a library that exchanges
+//! messages over NFS, so it makes sense to assume everyone can access the NFS
+//! server.
 mod atomic_base_time;
+pub mod nfs_voucher;
 
 use std::io::Result;
 
