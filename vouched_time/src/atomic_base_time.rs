@@ -157,16 +157,25 @@ impl AtomicBaseTime {
             Err(WouldBlock) => return false,
         };
 
-        self.advance_once(&mut token, update);
-        true
+        self.advance_once(&mut token, update)
     }
 
-    fn advance_once(&self, _token: &mut WriteToken, update: (u64, raffle::Voucher)) {
-        let next = self.sequence.load(Ordering::Relaxed).wrapping_add(1);
+    fn advance_once(&self, _token: &mut WriteToken, update: (u64, raffle::Voucher)) -> bool {
+        let current = self.sequence.load(Ordering::Relaxed);
+        let current_base_time_ms = self.snapshots[(current as usize) % self.snapshots.len()]
+            .snapshot()
+            .0;
+        if update.0 < current_base_time_ms {
+            // The update is older than the current value; skip it.
+            return false;
+        }
+
+        let next = current.wrapping_add(1);
         let idx = (next as usize) % self.snapshots.len();
 
         self.snapshots[idx].update(update.0, update.1);
         self.sequence.store(next, Ordering::Release); // Commit the write
+        true
     }
 }
 
