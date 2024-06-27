@@ -42,7 +42,7 @@ pub trait PushTruncateContainer {
 /// The [`SlidingDeque`] internally wastes up to half the space on
 /// consumed but yet unshifted elements; a typical growable container
 /// will waste up to half of its own space on buffer space for `push`.
-/// In total, we can expect up to 4x space overhead for a SlidingDeque
+/// In total, we can expect up to 4x space overhead for a [`SlidingDeque`]
 /// (i.e., the maximum heap footprint will be up to 4x the maximum
 /// number of logically live items in the container).
 #[derive(Clone, Debug, Default)]
@@ -296,6 +296,63 @@ where
     fn slice_mut(&mut self) -> &mut [Self::Item] {
         self
     }
+}
+
+#[test]
+fn test_new_miri() {
+    let deque: SlidingVec<i32> = SlidingDeque::new();
+    assert!(deque.is_empty());
+}
+
+#[test]
+fn test_push_back_miri() {
+    let mut deque: SlidingSmallVec<[i32; 4]> = SlidingDeque::new();
+    deque.push_back(1);
+    deque.push_back(2);
+    assert_eq!(deque.front(), Some(&1));
+    assert_eq!(deque.back(), Some(&2));
+}
+
+#[test]
+fn test_pop_front_miri() {
+    let mut deque: SlidingVec<i32> = SlidingDeque::new();
+    deque.push_back(1);
+    deque.push_back(2);
+    assert_eq!(deque.pop_front(), Some(1));
+    assert_eq!(deque.pop_front(), Some(2));
+    assert_eq!(deque.pop_front(), None);
+}
+
+#[test]
+fn test_pop_back_miri() {
+    let mut deque: SlidingVec<i32> = SlidingDeque::new();
+    deque.push_back(1);
+    deque.push_back(2);
+    assert_eq!(deque.pop_back(), Some(2));
+    assert_eq!(deque.pop_back(), Some(1));
+    assert_eq!(deque.pop_back(), None);
+}
+
+#[test]
+fn test_len_miri() {
+    let mut deque: SlidingSmallVec<[i32; 2]> = SlidingDeque::new();
+    assert_eq!(deque.len(), 0);
+    deque.push_back(1);
+    assert_eq!(deque.len(), 1);
+    deque.push_back(2);
+    assert_eq!(deque.len(), 2);
+    deque.pop_front();
+    assert_eq!(deque.len(), 1);
+}
+
+#[test]
+fn test_is_empty_miri() {
+    let mut deque: SlidingVec<i32> = SlidingDeque::new();
+    assert!(deque.is_empty());
+    deque.push_back(1);
+    assert!(!deque.is_empty());
+    deque.pop_back();
+    assert!(deque.is_empty());
 }
 
 #[test]

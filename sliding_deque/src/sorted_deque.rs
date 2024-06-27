@@ -559,3 +559,120 @@ fn test_key_val_miri() {
 
     assert!(deque.is_empty());
 }
+
+#[test]
+#[should_panic(expected = "left: Greater")]
+fn test_push_back_or_panic_miri() {
+    let mut deque: SortedDeque<Vec<TestItem>> = Default::default();
+
+    let item1 = TestItem {
+        key: 1,
+        value: Some(1.try_into().unwrap()),
+    };
+    let item2 = TestItem {
+        key: 2,
+        value: Some(2.try_into().unwrap()),
+    };
+    let item3 = TestItem {
+        key: 1,
+        value: Some(3.try_into().unwrap()),
+    }; // Not strictly greater
+
+    deque.push_back_or_panic(item1);
+    deque.push_back_or_panic(item2);
+
+    // This should panic
+    deque.push_back_or_panic(item3);
+}
+
+#[test]
+fn test_pop_first_and_last_miri() {
+    let mut deque: SortedDeque<Vec<TestItem>> = Default::default();
+
+    let item1 = TestItem {
+        key: 1,
+        value: Some(1.try_into().unwrap()),
+    };
+    let item2 = TestItem {
+        key: 2,
+        value: Some(2.try_into().unwrap()),
+    };
+
+    deque.push_back_or_panic(item1);
+    deque.push_back_or_panic(item2);
+
+    assert_eq!(deque.pop_first(), Some(item1));
+    assert_eq!(deque.pop_last(), Some(item2));
+    assert!(deque.is_empty());
+}
+
+#[test]
+fn test_erasure_logic_miri() {
+    let mut deque: SortedDeque<Vec<TestItem>> = Default::default();
+
+    let item1 = TestItem {
+        key: 1,
+        value: Some(1.try_into().unwrap()),
+    };
+    let item2 = TestItem {
+        key: 2,
+        value: Some(2.try_into().unwrap()),
+    };
+
+    deque.push_back_or_panic(item1);
+    deque.push_back_or_panic(item2);
+
+    deque.remove(&item2);
+
+    assert_eq!(deque.find(&item2), None);
+}
+
+#[test]
+fn test_find_miri() {
+    let mut deque: SortedDeque<Vec<TestItem>> = Default::default();
+
+    let item1 = TestItem {
+        key: 1,
+        value: Some(1.try_into().unwrap()),
+    };
+    let item2 = TestItem {
+        key: 2,
+        value: Some(2.try_into().unwrap()),
+    };
+
+    deque.push_back_or_panic(item1);
+    deque.push_back_or_panic(item2);
+
+    assert_eq!(deque.find(&item1), Some(&item1));
+    assert_eq!(deque.find(&item2), Some(&item2));
+    assert_eq!(
+        deque.find(&TestItem {
+            key: 3,
+            value: None
+        }),
+        None
+    );
+}
+
+#[test]
+fn test_cleanup_methods_miri() {
+    let mut deque: SortedDeque<Vec<TestItem>> = Default::default();
+
+    let item1 = TestItem {
+        key: 1,
+        value: Some(1.try_into().unwrap()),
+    };
+    let item2 = TestItem {
+        key: 2,
+        value: Some(2.try_into().unwrap()),
+    };
+
+    deque.push_back_or_panic(item1);
+    deque.push_back_or_panic(item2);
+
+    assert_eq!(deque.remove(&item2), Some(item2));
+    deque.cleanup_back();
+
+    assert_eq!(deque.last(), Some(&item1));
+    assert_eq!(deque.find(&item2), None);
+}
