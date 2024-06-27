@@ -474,6 +474,7 @@ impl LogMaintainer {
 // Smoke test the happy path for all 3 facets (writer, reader, maintainer).
 #[test]
 fn test_log_lifetime() {
+    use std::time::Instant;
     use test_dir::{DirBuilder, FileType, TestDir};
     use time::macros::datetime;
 
@@ -492,6 +493,8 @@ fn test_log_lifetime() {
 
     // First chunk of write
     {
+        let start = Instant::now();
+
         let begin = VouchedTime::new(
             datetime!(2024-04-07 16:01:32),
             1712505692000,
@@ -510,6 +513,9 @@ fn test_log_lifetime() {
             )
             .expect("write must succeed");
 
+        eprintln!("First write took {:?}", start.elapsed());
+
+        let start = Instant::now();
         // Errors are propagated and the record will not be comitted.
         assert!(writer1
             .write_or_panic(
@@ -524,6 +530,8 @@ fn test_log_lifetime() {
             )
             .is_err());
 
+        eprintln!("Failed write took {:?}", start.elapsed());
+
         let late = VouchedTime::new(
             datetime!(2024-04-07 16:01:42),
             1712505702000,
@@ -531,6 +539,7 @@ fn test_log_lifetime() {
         )
         .unwrap();
 
+        let start = Instant::now();
         // A late write should fail gracefully.
         let mut times = vec![late, begin];
         assert!(writer1
@@ -542,6 +551,7 @@ fn test_log_lifetime() {
                 |record| { record.write_all(b"test3") }
             )
             .is_err());
+        eprintln!("Late write took {:?}", start.elapsed());
     }
 
     // Read a little
@@ -553,9 +563,11 @@ fn test_log_lifetime() {
         )
         .unwrap();
 
+        let start = Instant::now();
         reader
             .maintain_cache(begin, time::Duration::minutes(1), Default::default())
             .expect("should work");
+        eprintln!("Initial read took {:?}", start.elapsed());
 
         let records = reader
             .range(datetime!(2024-04-07 16:00:34)..=datetime!(2024-04-07 16:01:34))
@@ -585,6 +597,7 @@ fn test_log_lifetime() {
         )
         .unwrap();
 
+        let start = Instant::now();
         // Easy case works
         writer1
             .write_or_panic(
@@ -595,7 +608,9 @@ fn test_log_lifetime() {
                 |record| record.write_all(b"test4"),
             )
             .expect("write must succeed");
+        eprintln!("Second write took {:?}", start.elapsed());
 
+        let start = Instant::now();
         writer2
             .write_or_panic(
                 "writer2",
@@ -605,6 +620,7 @@ fn test_log_lifetime() {
                 |record| record.write_all(b"test5"),
             )
             .expect("write must succeed");
+        eprintln!("Third write took {:?}", start.elapsed());
     }
 
     // Re-reading without maintaining the cache doesn't pick up the new records.
@@ -635,9 +651,11 @@ fn test_log_lifetime() {
         )
         .unwrap();
 
+        let start = Instant::now();
         reader
             .maintain_cache(begin, time::Duration::minutes(1), Default::default())
             .expect("should work");
+        eprintln!("Second read took {:?}", start.elapsed());
 
         let records = reader
             .range(datetime!(2024-04-07 16:00:35)..=datetime!(2024-04-07 16:01:35))
@@ -707,6 +725,7 @@ fn test_log_lifetime() {
         )
         .unwrap();
 
+        let start = Instant::now();
         // Easy case works
         writer2
             .write_or_panic(
@@ -717,6 +736,7 @@ fn test_log_lifetime() {
                 |record| record.write_all(b"mid"),
             )
             .expect("write must succeed");
+        eprintln!("New epoch write took {:?}", start.elapsed());
     }
 
     // Now exercise the maintenance interface with two pile subdirs.
@@ -772,6 +792,7 @@ fn test_log_lifetime() {
         .unwrap());
 
         // And now it's late enough to close.
+        let start = Instant::now();
         assert_eq!(
             maintainer
                 .close_subdir(
@@ -787,6 +808,7 @@ fn test_log_lifetime() {
                 .unwrap(),
             None
         );
+        eprintln!("Closing old epoch took {:?}", start.elapsed());
     }
 
     // Update the reader again
@@ -799,9 +821,11 @@ fn test_log_lifetime() {
         )
         .unwrap();
 
+        let start = Instant::now();
         reader
             .maintain_cache(begin, time::Duration::minutes(1), Default::default())
             .expect("should work");
+        eprintln!("Third read took {:?}", start.elapsed());
 
         // Old records aren't affected.
         let old_records = reader
@@ -923,6 +947,7 @@ fn test_log_lifetime() {
         )
         .unwrap();
 
+        let start = Instant::now();
         reader
             .update_cache(
                 late.get_local_time(),
@@ -934,6 +959,7 @@ fn test_log_lifetime() {
                 },
             )
             .expect("should not need to close");
+        eprintln!("Regular read took {:?}", start.elapsed());
 
         assert!(!crate::close::epoch_subdir_is_being_closed(
             temp.path("test_log_lifetime/2024-04-07/16/01:45-6612c370")
@@ -947,6 +973,7 @@ fn test_log_lifetime() {
         .unwrap();
 
         // We have to close, but can't.  A read-only reader should error out.
+        let start = Instant::now();
         assert!(reader
             .update_cache(
                 late.get_local_time(),
@@ -959,7 +986,9 @@ fn test_log_lifetime() {
                 }
             )
             .is_err());
+        eprintln!("Stale read only read took {:?}", start.elapsed());
 
+        let start = Instant::now();
         reader
             .update_cache(
                 late.get_local_time(),
@@ -968,6 +997,7 @@ fn test_log_lifetime() {
                 Default::default(),
             )
             .expect("should work");
+        eprintln!("Closing read took {:?}", start.elapsed());
 
         assert!(crate::close::epoch_subdir_is_being_closed(
             temp.path("test_log_lifetime/2024-04-07/16/01:45-6612c370")
