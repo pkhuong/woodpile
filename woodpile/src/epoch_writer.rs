@@ -49,7 +49,7 @@ pub struct EpochWriterOptions {
 /// they won't. The only way to know for sure is to close the epoch and check.
 ///
 /// 5. Make sure the newly written record is visible with
-///   [`EpochWriter::close()`].
+///    [`EpochWriter::close()`].
 ///
 /// 6. Check that the written record made it before the epoch was closed, with
 ///    [`EpochCommit::confirm()`].
