@@ -1,10 +1,20 @@
-//! Use nix to manipulate [`IoSlice`]s without converting back to
-//! regular slices: the conversion to slices introduces stacked borrow
+//! Use the backing foreign type to manipulate [`IoSlice`]s without converting
+//! back to regular slices: the conversion to slices introduces stacked borrow
 //! constraints.
 #[cfg(unix)]
 mod unix {
     use std::io::IoSlice;
 
+    const _: () =
+        assert!(std::mem::size_of::<libc::iovec>() == std::mem::size_of::<IoSlice<'static>>());
+
+    /// Creates an `IoSlice<'static>` from a raw pointer and length.
+    ///
+    /// # Safety
+    ///
+    /// The `'static` lifetime is a lie; the caller must ensure that the
+    /// memory region pointed to by `base` with length `len` is valid for the
+    /// lifetime of the returned `IoSlice`.
     #[must_use]
     #[inline]
     pub fn make_ioslice(base: *mut u8, len: usize) -> IoSlice<'static> {
@@ -16,6 +26,7 @@ mod unix {
         unsafe { std::mem::transmute(ret) }
     }
 
+    /// Returns the base pointer and length of the given `IoSlice<'_>`.
     #[must_use]
     #[inline]
     pub fn ioslice_components(slice: IoSlice<'_>) -> (*mut u8, usize) {
@@ -43,6 +54,15 @@ mod windows {
         buf: *mut u8,
     }
 
+    const _: () = assert!(std::mem::size_of::<WSABuf>() == std::mem::size_of::<IoSlice<'static>>());
+
+    /// Creates an `IoSlice<'static>` from a raw pointer and length.
+    ///
+    /// # Safety
+    ///
+    /// The `'static` lifetime is a lie; the caller must ensure that the
+    /// memory region pointed to by `base` with length `len` is valid for the
+    /// lifetime of the returned `IoSlice`.
     #[must_use]
     #[inline]
     pub fn make_ioslice(base: *mut u8, len: usize) -> IoSlice<'static> {
@@ -56,6 +76,7 @@ mod windows {
         unsafe { std::mem::transmute(ret) }
     }
 
+    /// Returns the base pointer and length of the given `IoSlice<'_>`.
     #[must_use]
     #[inline]
     pub fn ioslice_components(slice: IoSlice<'_>) -> (*mut u8, usize) {
@@ -67,3 +88,22 @@ mod windows {
 
 #[cfg(windows)]
 pub use windows::{ioslice_components, make_ioslice};
+
+#[test]
+fn test_roundtrip_miri() {
+    use std::io::IoSlice;
+
+    let data = vec![1, 2, 3];
+    let slice = IoSlice::new(&data);
+
+    let (base, len) = ioslice_components(slice);
+    assert_eq!(base as *const u8, data.as_ptr_range().start);
+    assert_eq!(len, data.len());
+
+    let new_slice = make_ioslice(base, len);
+    assert_eq!(&*slice, &*new_slice);
+    assert_eq!(slice.as_ptr(), new_slice.as_ptr());
+    assert_eq!(slice.len(), new_slice.len());
+
+    assert_eq!(ioslice_components(slice), ioslice_components(new_slice))
+}
