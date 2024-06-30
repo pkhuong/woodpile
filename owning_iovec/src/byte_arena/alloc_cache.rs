@@ -126,10 +126,73 @@ impl AllocCache {
         let addr = base as usize;
         let end_addr = addr + len;
 
-        assert!(self.range().contains(&addr));
+        // The start address must be strictly in the backing chunk, unless
+        // we have an empty remainder (at the tail of the chunk).
+        assert!(self.range().contains(&addr) | remainder.is_empty());
         assert_eq!(self.bump as usize, end_addr);
 
         // SAFETY: `remainder` is fully in the backing chunk.
         self.bump = unsafe { self.bump.sub(len) };
     }
+}
+
+#[test]
+fn test_new_miri() {
+    let cache = AllocCache::new(10, 20);
+    assert_eq!(cache.initial_size(), 20);
+    assert_eq!(cache.remaining(), 20);
+}
+
+#[test]
+fn test_alloc_or_die_miri() {
+    let mut cache = AllocCache::new(10, 20);
+    let (slice, anchor) = unsafe { cache.alloc_or_die(5, None) };
+    assert_eq!(slice.len(), 5);
+    assert!(anchor.is_some());
+    assert_eq!(cache.remaining(), 15);
+}
+
+#[test]
+fn test_release_or_die_miri() {
+    let mut cache = AllocCache::new(10, 20);
+    let (slice, _anchor) = unsafe { cache.alloc_or_die(5, None) };
+    cache.release_or_die(slice);
+    assert_eq!(cache.remaining(), 20);
+}
+
+#[test]
+fn test_release_or_die_empty_miri() {
+    let mut cache = AllocCache::new(20, 20);
+    let (slice, _anchor) = unsafe { cache.alloc_or_die(20, None) };
+    cache.release_or_die(IoSlice::new(&slice[20..]));
+    assert_eq!(cache.remaining(), 0);
+}
+
+#[test]
+fn test_alloc_and_release_miri() {
+    let mut cache = AllocCache::new(10, 20);
+    let (slice1, anchor1) = unsafe { cache.alloc_or_die(5, None) };
+    let (slice2, _anchor2) = unsafe { cache.alloc_or_die(10, Some(&mut anchor1.unwrap())) };
+    assert_eq!(slice1.len(), 5);
+    assert_eq!(slice2.len(), 10);
+    assert_eq!(cache.remaining(), 5);
+    cache.release_or_die(slice2);
+    assert_eq!(cache.remaining(), 15);
+}
+
+#[test]
+#[should_panic(expected = "end - bump >= wanted")]
+fn test_alloc_too_large_miri() {
+    let mut cache = AllocCache::new(10, 20);
+    let _result = unsafe { cache.alloc_or_die(21, None) };
+}
+
+#[test]
+#[should_panic(expected = "assertion failed")]
+fn test_release_invalid_slice_miri() {
+    let mut cache = AllocCache::new(10, 20);
+    let mut vec = Vec::with_capacity(5);
+    unsafe { vec.set_len(5) };
+    let slice = IoSlice::new(&vec);
+    cache.release_or_die(slice);
 }
