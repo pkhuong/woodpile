@@ -253,22 +253,40 @@ impl PileReader {
             .saturating_add(crate::CLOCK_ERROR_BOUND)
             .saturating_add(options.force_close_grace_period.max(time::Duration::ZERO));
 
-        if now.get_local_time() > close_time {
-            // Must forcibly close the directory.
+        // It's safe to assume we don't have a summary file until we definitely
+        // want one.
+        let mut have_summary_file = false;
 
-            // Can't do that in read-only mode.
-            if options.mode == PileReaderMode::ReadOnly {
-                return Err(std::io::Error::other(
-                    "Pile directory past closing time, but PileReader is read-only.",
-                ));
+        {
+            let late = now.get_local_time() > close_time;
+            if late {
+                have_summary_file = summary_path.is_file();
+                // Flush NFS caches before checking again
+                if !have_summary_file {
+                    let _ = pile_dir.read_dir()?.next();
+                    have_summary_file = summary_path.is_file();
+                }
             }
 
-            let fsync = options.mode == PileReaderMode::Fsync;
-            let _ = crate::close::close_epoch_subdir(
-                pile_dir.clone(),
-                now,
-                crate::close::CloseEpochOptions { fsync },
-            )?;
+            if late & !have_summary_file {
+                // Must forcibly close the directory.
+
+                // Can't do that in read-only mode.
+                if options.mode == PileReaderMode::ReadOnly {
+                    return Err(std::io::Error::other(
+                        "Pile directory past closing time, but PileReader is read-only.",
+                    ));
+                }
+
+                let fsync = options.mode == PileReaderMode::Fsync;
+                let _ = crate::close::close_epoch_subdir(
+                    pile_dir.clone(),
+                    now,
+                    crate::close::CloseEpochOptions { fsync },
+                )?;
+
+                have_summary_file = true;
+            }
         }
 
         let mut logs: Vec<(PathBuf, u64)> = Vec::new();
@@ -279,7 +297,7 @@ impl PileReader {
         let _ = pile_dir_dirents.peek();
 
         // See if we have a summary file.
-        if summary_path.is_file() {
+        if have_summary_file || summary_path.is_file() {
             let path = summary_path
                 .strip_prefix(&pile_dir)
                 .expect("summary file must be under pile dir")
