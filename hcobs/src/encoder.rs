@@ -13,9 +13,17 @@ use owning_iovec::OwningIovec;
 
 #[derive(Debug)]
 pub struct EncoderState {
+    // Initially `max_initial_size`, then `max_subsequent_size` for subsequent
+    // chunks.
     max_chunk_size: NonZeroUsize,
+    // How many bytes we've accumulated in the chunk so far.  Once this reaches
+    // `max_chunk_size`, we must terminate the chunk.
     current_chunk_size: usize,
+    // True if we might have stopped encoding in the middle of a stuff sequence,
+    // and must wait for the next byte to know for sure (if it is, we must
+    // terminate the chunk).
     maybe_mid_stuff: bool,
+    // Backreference to the size header for the current chunk.
     backref: Backref,
 }
 
@@ -122,7 +130,7 @@ impl EncoderState {
         assert!((1..=2).contains(&len));
         assert!(header[len] == 0);
 
-        iovec.backfill(backref, &header[0..len]);
+        iovec.backfill_or_panic(backref, &header[0..len]);
     }
 
     #[inline(never)]

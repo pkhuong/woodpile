@@ -8,25 +8,47 @@ use std::num::NonZeroU32;
 
 use owning_iovec::OwningIovec;
 
+/// The initial state for the HCOBS decoder.  We're expecting the first chunk
+/// of data.
+///
+/// The initial state is special because the first chunk has a one-byte size
+/// header.
 #[derive(Debug, Eq, PartialEq)]
 pub struct InitialState {}
 
+/// The other reset state for the HCOBS decoder, between chunks.  We're
+/// waiting for a subsequent (not the first) chunk of data.
+///
+/// Subsequent chunks differ from the initial chunk because they have a
+/// two-byte size header. The `should insert_stuff_sequence` field indicates
+/// whether a `STUFF_SEQUENCE` should be inserted at the start of the next
+/// chunk.  We don't producer the `STUFF_SEQUENCE` eagerly because the last
+/// one in an encoded sequence is an fake sequence that acts as a terminator.
 #[derive(Debug, Eq, PartialEq)]
 pub struct BeforeChunk {
-    insert_stuff_sequence: bool,
+    should_insert_stuff_sequence: bool,
 }
 
+/// The state of the HCOBS decoder after processing the first byte of a chunk
+/// size header; that first byte is stored in `initial_byte`.
 #[derive(Debug, Eq, PartialEq)]
 pub struct MidHeader {
     initial_byte: u8,
 }
 
+/// The state of the HCOBS decoder when decoding a size-prefixed chunk.
+///
+/// The `remaining` field indicates the number of bytes remaining in the
+/// current chunk, and the `terminate_with_stuff_sequence` field indicates
+/// whether the chunk should be terminated with a `STUFF_SEQUENCE`.
 #[derive(Debug, Eq, PartialEq)]
 pub struct InChunk {
     remaining: NonZeroU32,
     terminate_with_stuff_sequence: bool,
 }
 
+/// Represents the different states of the HCOBS decoder during the decoding
+/// process.
 #[derive(Debug, Eq, PartialEq)]
 pub enum DecoderState {
     InitialState(InitialState),
@@ -38,15 +60,16 @@ pub enum DecoderState {
 /// Failure reasons for decoding with [`Decoder`]
 ///
 /// HCOBS-encoded data is partitioned in length-value segments, where the
-/// values are arbitrary (they *shouldn't* contain the [`STUFF_SEQUENCE`],
-/// but that's irrelevant for decoding).  The only validation happens for the
+/// values are arbitrary (they *shouldn't* contain the [`STUFF_SEQUENCE`], but
+/// that's irrelevant for decoding).  The only validation happens for the
 /// length headers: lengths are in radix-253, so high bytes are invalid.  We
 /// also expect the HCOBS-encoded value to end exactly at a segment with an
-/// implicit [`STUFF_SEQUENCE`] at the end, so short inputs can also error out.
+/// implicit [`STUFF_SEQUENCE`] at the end, so short inputs can also error
+/// out.
 ///
 /// This format is robust, and there are many ways for a corrupt or truncated
-/// encoded stream to still decode correctly.  Encoded data should come with
-/// a checksum mechanism (e.g., embedded in each encoded payload).
+/// encoded stream to still decode correctly. Encoded data should come with a
+/// checksum mechanism (e.g., embedded in each encoded payload).
 ///
 /// [`Decoder`]: [`crate::Decoder`]
 #[derive(Debug, Clone, Copy)]
@@ -115,16 +138,21 @@ impl Default for DecoderState {
 }
 
 impl DecoderState {
+    /// Creates a new `DecoderState` in the initial state.
     #[inline(always)]
     pub fn new() -> DecoderState {
         DecoderState::InitialState(InitialState {})
     }
 
+    /// Terminates the decoding process.
+    ///
+    /// Returns an error if the decoder was not stopped at the end of a chunk
+    /// with an implicit stuff sequence terminator (i.e., was stopped early).
     #[inline(always)]
     pub fn terminate(self) -> Result<()> {
         match self {
             DecoderState::BeforeChunk(state) => {
-                if state.insert_stuff_sequence {
+                if state.should_insert_stuff_sequence {
                     // We must have a stuff sequence pending if we terminate
                     Ok(())
                 } else {
@@ -135,6 +163,10 @@ impl DecoderState {
         }
     }
 
+    /// Decodes the contents of an input slice into an [`OwningIovec`].
+    ///
+    /// Returns an error if there is any decoding error, otherwise consumes
+    /// the whole slice.
     pub fn decode_borrow<'slices>(
         mut self,
         iovec: &mut OwningIovec<'slices>,
@@ -144,6 +176,7 @@ impl DecoderState {
         while !input.is_empty() {
             let consumed;
 
+            // Each `decode` call advances the state machine by one state.
             (self, consumed) = match self {
                 DecoderState::InitialState(state) => state.decode(iovec, params, input)?,
                 DecoderState::BeforeChunk(state) => state.decode(iovec, params, input)?,
@@ -157,6 +190,11 @@ impl DecoderState {
         Ok(self)
     }
 
+    /// Decodes the contents of an input slice into an [`OwningIovec`], while
+    /// unconditionally copying bytes into fresh slices owned by `iovec`.
+    ///
+    /// Returns an error if there is any decoding error, otherwise consumes
+    /// the whole slice.
     pub fn decode_copy(
         mut self,
         iovec: &mut OwningIovec<'_>,
@@ -207,7 +245,7 @@ impl InitialState {
         } else {
             Ok((
                 DecoderState::BeforeChunk(BeforeChunk {
-                    insert_stuff_sequence: terminate_with_stuff_sequence,
+                    should_insert_stuff_sequence: terminate_with_stuff_sequence,
                 }),
                 1,
             ))
@@ -224,7 +262,7 @@ impl BeforeChunk {
     ) -> Result<(DecoderState, usize)> {
         assert!(!input.is_empty());
 
-        if self.insert_stuff_sequence {
+        if self.should_insert_stuff_sequence {
             iovec.push_copy(&STUFF_SEQUENCE);
         }
 
@@ -270,7 +308,7 @@ impl MidHeader {
         } else {
             Ok((
                 DecoderState::BeforeChunk(BeforeChunk {
-                    insert_stuff_sequence: terminate_with_stuff_sequence,
+                    should_insert_stuff_sequence: terminate_with_stuff_sequence,
                 }),
                 1,
             ))
@@ -285,10 +323,10 @@ impl InChunk {
             (DecoderState::InChunk(self), bytes_consumed)
         } else {
             assert_eq!(self.remaining.get(), bytes_consumed as u32);
-            let insert_stuff_sequence = self.terminate_with_stuff_sequence;
+            let should_insert_stuff_sequence = self.terminate_with_stuff_sequence;
             (
                 DecoderState::BeforeChunk(BeforeChunk {
-                    insert_stuff_sequence,
+                    should_insert_stuff_sequence,
                 }),
                 bytes_consumed,
             )
