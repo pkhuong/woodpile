@@ -297,7 +297,12 @@ fn close_epoch_subdir_impl(
 
     // Make it read-only, which should also flush on NFS (v3?).
     {
-        let mut perms = summary.as_file().metadata()?.permissions();
+        // Get permissions by stat-ing through `vouched_time`, to get a free
+        // base time update if necessary.
+        //
+        // let mut perms = summary.as_file().metadata()?.permissions();
+        use vouched_time::nfs_voucher::observe_file_time;
+        let mut perms = observe_file_time(summary.as_file())?.0.permissions();
         perms.set_readonly(true);
         summary.as_file_mut().set_permissions(perms)?;
     }

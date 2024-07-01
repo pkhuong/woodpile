@@ -365,7 +365,12 @@ impl PileReader {
                 // partial record, it'll always be at the end: if we were
                 // to race with multiple writes and catch up at the end,
                 // we wouldn't revisit the hole in the middle.
-                let meta = file.metadata()?;
+                //
+                // We also use nfs_voucher for the metadata to get a base time
+                // update for free if necessary.
+                //
+                // let meta = file.metadata()?;
+                let meta = vouched_time::nfs_voucher::observe_file_time(&file)?.0;
                 file.seek(SeekFrom::Start(offset))?;
                 self.current_reader = Some((
                     ShardReader::new(

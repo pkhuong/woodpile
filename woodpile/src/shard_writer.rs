@@ -219,6 +219,11 @@ impl ShardWriter {
             iovec.total_size(),
         );
 
+        // Try to update our base time if necessary.
+        if vouched_time::nfs_voucher::should_refresh_base_time(None) {
+            let _ = vouched_time::nfs_voucher::observe_file_time(writer.file());
+        }
+
         // Attempt to write out the whole iovec.
         let result = (|| {
             while iovec.total_size() > 0 {
