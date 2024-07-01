@@ -14,7 +14,12 @@ use std::sync::Arc;
 // reader: n=100000 min=2ms385µs727ns p1=3ms178µs37ns p5=3ms981µs82ns p50=8ms172µs514ns p90=15ms507µs824ns p95=20ms243µs508ns p99=35ms473µs181ns p999=63ms517µs392ns max=111ms153µs97ns
 //         n=100000 min=2µs949ns p1=130µs23ns p5=406µs525ns p50=4ms91µs769ns p90=7ms662µs241ns p95=10ms539µs638ns p99=19ms847µs763ns p999=42ms510µs502ns max=85ms81µs869ns
 //          n=84081 min=1ms644µs606ns p1=2ms440µs760ns p5=2ms833µs865ns p50=3ms951µs581ns p90=7ms408µs296ns p95=9ms257µs987ns p99=16ms211µs224ns p999=35ms7µs833ns max=85ms421µs217ns
-
+//
+// EFS OneZone
+// writer: n=100500 min=3ms429µs542ns p1=4ms186µs909ns p5=4ms453µs300ns p50=5ms346µs352ns p90=8ms48µs86ns p95=9ms110µs385ns p99=13ms450µs61ns p999=21ms854µs47ns max=58ms784µs471ns
+// reader: n=100001 min=6ms15µs660ns p1=8ms999µs617ns p5=10ms373µs883ns p50=17ms189µs863ns p90=27ms216µs466ns p95=31ms691µs593ns p99=45ms857µs139ns p999=78ms411µs603ns max=123ms720µs5ns
+//         n=100001 min=2µs127ns p1=878µs504ns p5=2ms21µs266ns p50=7ms321µs764ns p90=13ms295µs506ns p95=15ms561µs272ns p99=23ms833µs755ns p999=44ms574µs244ns max=91ms687µs279ns
+//          n=53274 min=5ms448µs101ns p1=6ms313µs906ns p5=6ms967µs267ns p50=9ms807µs324ns p90=15ms158µs782ns p95=17ms838µs254ns p99=25ms921µs963ns p999=43ms573µs847ns max=83ms436µs398ns
 fn maintainer(log: woodpile::LogMaintainer) {
     use std::collections::HashMap;
     use std::path::PathBuf;
