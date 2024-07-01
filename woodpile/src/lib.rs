@@ -34,7 +34,6 @@ mod pile;
 use std::io::Result;
 use std::path::Path;
 use std::path::PathBuf;
-use time::Duration;
 
 pub use log::CacheOptions;
 pub use log::CloseOptions;
@@ -46,43 +45,55 @@ pub use log::ReaderMode;
 pub use log::Record;
 pub use log::WriteOptions;
 
-/// We assume any two clocks differ by at most this many seconds.  We
-/// try to avoid crashes when the actual error exceeds this value, but
-/// there will be strange behaviour.
-///
-/// This error bound accounts for the maximum deterministic difference
-/// of 1 second around leap seconds (each clock may be in the
-/// "timezone" before or after the leap second, or smeared in the
-/// middle), as well as clock synchronisation error on both sides.
-///
-/// The maximum round-trip times between two AWS regions is around
-/// 400 ms, so a whole second of total clock error seems generous.
-pub const CLOCK_ERROR_BOUND: Duration = Duration::new(2, 0);
+pub mod constants {
+    //! The `constants` module holds some important constants that may be
+    //! useful for external users.
+    use time::Duration;
 
-/// The period at which we open a new epoch.  For example, the current
-/// value for 5 means that we'll open an epoch at the top of the hour,
-/// 00:00, then 5 second later at 00:05, etc.  It makes our life
-/// simpler, especially around leap seconds, if this value is a factor
-/// of 86400 (the number of seconds in a day), and at least 2.
-const EPOCH_PERIOD: u32 = 5;
+    /// We assume any two clocks differ by at most this many seconds.  We
+    /// try to avoid crashes when the actual error exceeds this value, but
+    /// there will be strange behaviour.
+    ///
+    /// This error bound accounts for the maximum deterministic difference
+    /// of 1 second around leap seconds (each clock may be in the
+    /// "timezone" before or after the leap second, or smeared in the
+    /// middle), as well as clock synchronisation error on both sides.
+    ///
+    /// The maximum round-trip times between two AWS regions is around
+    /// 400 ms, so a whole second of total clock error seems generous.
+    pub const CLOCK_ERROR_BOUND: Duration = Duration::new(2, 0);
 
-/// The amount of time we're allowed to use an epoch for writing.  This
-/// is slightly more than the period to help slower writers, and to let
-/// implementations delay creating new epochs for a little while and
-/// avoid a coordinated DDoS.
-///
-/// At this point, closers are allowed to give an advance warning to
-/// writers that the epoch is about to close.
-pub const EPOCH_WRITE_DURATION: Duration = Duration::new(7, 0);
+    /// The period at which we open a new epoch.  For example, the current
+    /// value for 5 means that we'll open an epoch at the top of the hour,
+    /// 00:00, then 5 second later at 00:05, etc.  It makes our life
+    /// simpler, especially around leap seconds, if this value is a factor
+    /// of 86400 (the number of seconds in a day), and at least 2.
+    pub const EPOCH_PERIOD: u32 = 5;
 
-/// The amount of time an epoch may still be used for writes after
-/// [`EPOCH_WRITE_DURATION`]. This leeway gives slow writers extra room.
-///
-/// Only after that time are closers allowed to start the snapshotting
-/// process, and thus reject late writes.
-pub const EPOCH_WRITE_LEEWAY: Duration = Duration::new(0, 900_000_000);
+    /// The amount of time we're allowed to use an epoch for writing.  This
+    /// is slightly more than the period to help slower writers, and to let
+    /// implementations delay creating new epochs for a little while and
+    /// avoid a coordinated DDoS.
+    ///
+    /// At this point, closers are allowed to give an advance warning to
+    /// writers that the epoch is about to close.
+    pub const EPOCH_WRITE_DURATION: Duration = Duration::new(7, 0);
 
-const LOG_EXTENSION: &str = "log";
+    /// The amount of time an epoch may still be used for writes after
+    /// [`EPOCH_WRITE_DURATION`]. This leeway gives slow writers extra room.
+    ///
+    /// Only after that time are closers allowed to start the snapshotting
+    /// process, and thus reject late writes.
+    pub const EPOCH_WRITE_LEEWAY: Duration = Duration::new(0, 900_000_000);
+
+    /// Log files end in the `log` extension.
+    pub const LOG_EXTENSION: &str = "log";
+}
+
+use constants::*;
+
+#[cfg(test)]
+use time::Duration;
 
 // Check important properties for the constants above.
 #[test]
