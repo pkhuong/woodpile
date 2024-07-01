@@ -36,7 +36,7 @@ fn main() -> Result<()> {
                 // Stick `next_write` in the message to reflect coordinated omission.
                 |dst| {
                     let ts = if had_to_sleep { next_write } else { now };
-                    dst.write(&ts.unix_timestamp_nanos().to_le_bytes())?;
+                    dst.write_all(&ts.unix_timestamp_nanos().to_le_bytes())?;
                     //dst.write(&padding)?:
                     Ok(())
                 },

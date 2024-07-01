@@ -4,6 +4,7 @@ use std::io::Result;
 use std::path::Path;
 use std::sync::Arc;
 
+// writer on single-box FSx shaves ~1 ms off writes.
 // writer: n=100500 min=1ms879µs237ns p1=2ms94µs472ns p5=2ms181µs689ns p50=2ms491µs461ns p90=3ms945µs363ns p95=5ms95µs272ns p99=8ms858µs944ns p999=18ms796µs730ns max=45ms268µs840ns
 // NO RESCAN
 // reader: n=100000 min=2ms109µs61ns p1=2ms400µs360ns p5=2ms546µs958ns p50=5ms289µs322ns p90=9ms866µs65ns p95=13ms95µs154ns p99=23ms627µs114ns p999=45ms699µs664ns max=83ms225µs571ns
@@ -65,7 +66,7 @@ fn maintainer(log: woodpile::LogMaintainer) {
             let begin = std::time::Instant::now();
             if log
                 .close_subdir(
-                    &path,
+                    path,
                     vouched_time::VouchedTime::now_or_die(vouched_time::nfs_voucher::get_base_time),
                     Default::default(),
                 )
