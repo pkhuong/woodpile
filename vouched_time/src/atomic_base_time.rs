@@ -184,7 +184,7 @@ impl AtomicBaseTime {
 static _BASE_TIME: AtomicBaseTime = AtomicBaseTime::new();
 
 #[test]
-fn test_smoke() {
+fn test_smoke_miri() {
     const VOUCH_PARAMS: raffle::VouchingParameters = raffle::VouchingParameters::parse_or_die(
         "VOUCH-773ec2a0e62c20cd-f9e079b78e895091-fc1da7b1b77c57cb-594b9cce3091464a",
     );
@@ -220,7 +220,7 @@ fn test_smoke() {
 
 #[test]
 #[should_panic(expected = "BASE_TIME_CHECK.check")]
-fn test_panic() {
+fn test_panic_miri() {
     const VOUCH_PARAMS: raffle::VouchingParameters = raffle::VouchingParameters::parse_or_die(
         "VOUCH-773ec2a0e62c20cd-f9e079b78e895091-fc1da7b1b77c57cb-594b9cce3091464a",
     );

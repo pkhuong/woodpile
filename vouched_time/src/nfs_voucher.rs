@@ -73,10 +73,30 @@ pub fn add_trusted_path(path: PathBuf) -> Result<()> {
             extra_device: Some(dev),
         },
     )?
+    .1
     .expect("Path is trusted.");
 
     TRUSTED_PATHS.write().unwrap().insert(dev, path);
     Ok(())
+}
+
+const DEFAULT_LEEWAY_MS: u64 = 2 * crate::MAX_FORWARD_DISCREPANCY_MS / 3;
+
+/// Returns whether it's worth refreshing the current base time, because it's
+/// (approximately) older than `leeway_ms`.
+///
+/// If `leeway_ms` is None, use an appropriate default.
+pub fn should_refresh_base_time(leeway_ms: Option<u64>) -> bool {
+    let leeway_ms = leeway_ms.unwrap_or(DEFAULT_LEEWAY_MS);
+    let wanted: u64 = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
+        .clamp(0, u64::MAX as i128) as u64;
+    let (base_ms, _voucher) = get_base_time_unlocked().expect("_unlocked does not fail");
+
+    // Refresh if the base time looks stale and we have some trusted paths to
+    // refresh with.
+    //
+    // TODO: should jitter a little around here.
+    wanted.saturating_sub(base_ms) > leeway_ms && !TRUSTED_PATHS.read().unwrap().is_empty()
 }
 
 /// Given an arbitrary file, attempts to advance the base time based on the
@@ -92,7 +112,9 @@ pub fn add_trusted_path(path: PathBuf) -> Result<()> {
 ///
 /// This function `stat`s the file, but is otherwise wait-free.
 #[inline(always)]
-pub fn observe_file_time(file: &std::fs::File) -> Result<Option<(u64, raffle::Voucher)>> {
+pub fn observe_file_time(
+    file: &std::fs::File,
+) -> Result<(std::fs::Metadata, Option<(u64, raffle::Voucher)>)> {
     update_base_time(
         file,
         UpdateOptions {
@@ -101,6 +123,20 @@ pub fn observe_file_time(file: &std::fs::File) -> Result<Option<(u64, raffle::Vo
             extra_device: None,
         },
     )
+}
+
+/// Attempts to update the base time if it is already stale (more than 1000
+/// milliseconds behind).
+#[inline(never)]
+pub fn scan_base_time() -> Result<()> {
+    // We want to be more aggressive than the default leeway, when explicitly
+    // requesting a base time update.
+    const _: () = assert!(1000 < DEFAULT_LEEWAY_MS);
+    if should_refresh_base_time(Some(1000)) {
+        scan_for_base_time_impl()?;
+    }
+
+    Ok(())
 }
 
 /// Returns the current base time and voucher.
@@ -126,52 +162,45 @@ pub fn get_base_time_unlocked() -> Result<(u64, raffle::Voucher)> {
 /// This function is lock-free when the base time is up to date; if the base
 /// time must be updated, that can be slow, and requires I/O and locking.
 pub fn get_base_time() -> Result<(u64, raffle::Voucher)> {
-    let wanted: u64 = (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000)
-        .clamp(0, u64::MAX as i128) as u64;
-    let current = get_base_time_unlocked()?;
-    if wanted.saturating_sub(current.0) <= 2 * crate::MAX_FORWARD_DISCREPANCY_MS / 3 {
-        // The current vouched time isn't too far in the past,
-        // we can use it.
-        //
-        // XXX: should we preemptively update with a small probability?
-        return Ok(current);
+    if should_refresh_base_time(None) {
+        scan_for_base_time_impl()
+    } else {
+        get_base_time_unlocked()
     }
+}
 
-    return slow_path();
-
-    #[inline(never)]
-    fn slow_path() -> Result<(u64, raffle::Voucher)> {
-        let mut err: Option<std::io::Error> = None;
-        let trusted_paths = TRUSTED_PATHS.read().unwrap();
-        for path in trusted_paths.values() {
-            let file = std::fs::File::options()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(path)?;
-            match update_base_time(
-                &file,
-                UpdateOptions {
-                    blocking: true,
-                    touch: true,
-                    extra_device: None,
-                },
-            ) {
-                Ok(Some(update)) => return Ok(update),
-                Ok(None) => {}
-                Err(e) => {
-                    err.get_or_insert(e);
-                }
+#[inline(never)]
+fn scan_for_base_time_impl() -> Result<(u64, raffle::Voucher)> {
+    let mut err: Option<std::io::Error> = None;
+    let trusted_paths = TRUSTED_PATHS.read().unwrap();
+    for path in trusted_paths.values() {
+        let file = std::fs::File::options()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(path)?;
+        match update_base_time(
+            &file,
+            UpdateOptions {
+                blocking: true,
+                touch: true,
+                extra_device: None,
+            },
+        ) {
+            Ok((_, Some(update))) => return Ok(update),
+            Ok(_) => {}
+            Err(e) => {
+                err.get_or_insert(e);
             }
         }
-
-        Err(err.unwrap_or_else(|| {
-            std::io::Error::other(
-                "no nfs_voucher trusted path (or all paths moved to a different device)",
-            )
-        }))
     }
+
+    Err(err.unwrap_or_else(|| {
+        std::io::Error::other(
+            "no nfs_voucher trusted path (or all paths moved to a different device)",
+        )
+    }))
 }
 
 struct UpdateOptions {
@@ -184,7 +213,7 @@ struct UpdateOptions {
 fn update_base_time(
     file: &std::fs::File,
     options: UpdateOptions,
-) -> Result<Option<(u64, raffle::Voucher)>> {
+) -> Result<(std::fs::Metadata, Option<(u64, raffle::Voucher)>)> {
     use std::os::unix::fs::MetadataExt;
 
     if options.touch {
@@ -194,7 +223,7 @@ fn update_base_time(
     let stat = file.metadata()?;
     let dev = stat.dev();
     if !TRUSTED_PATHS.read().unwrap().contains_key(&dev) && options.extra_device != Some(dev) {
-        return Ok(None);
+        return Ok((stat, None));
     }
     const VOUCH_PARAMS: raffle::VouchingParameters = raffle::VouchingParameters::parse_or_die(
         "VOUCH-773ec2a0e62c20cd-f9e079b78e895091-fc1da7b1b77c57cb-594b9cce3091464a",
@@ -211,7 +240,7 @@ fn update_base_time(
         BASE_TIME.try_update(update);
     }
 
-    Ok(Some(update))
+    Ok((stat, Some(update)))
 }
 
 #[test]
