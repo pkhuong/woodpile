@@ -354,7 +354,7 @@ impl<'this> OwningIovec<'this> {
     ///
     /// Panics if `src` does not match the backreference's size, or if
     /// the backref does not come from the [`OwningIovec`].
-    pub fn backfill(&mut self, backref: Backref, src: &[u8]) {
+    pub fn backfill_or_panic(&mut self, backref: Backref, src: &[u8]) {
         let (logical_index, info) = match backref.0 {
             None => {
                 // Can only have empty backref.
@@ -889,12 +889,12 @@ fn test_backref_miri() {
     assert!(iovs.stable_consumer().is_err());
     assert!(iovs.iovs().is_err());
 
-    iovs.backfill(backref, b"a");
+    iovs.backfill_or_panic(backref, b"a");
     assert!(iovs.iovs().is_err());
     assert!(iovs.flatten().is_err());
     assert!(iovs.front().is_none());
 
-    iovs.backfill(other_backref, b"bb");
+    iovs.backfill_or_panic(other_backref, b"bb");
 
     assert!(iovs.iovs().is_ok());
     assert!(iovs.front().is_some());
@@ -902,7 +902,7 @@ fn test_backref_miri() {
 
     assert_eq!(iovs.flatten().unwrap(), b"a123bb56789");
 
-    iovs.backfill(empty, b"");
+    iovs.backfill_or_panic(empty, b"");
     assert_eq!(iovs.flatten().unwrap(), b"a123bb56789");
 
     iovs.consumer().pop_front();
@@ -922,12 +922,12 @@ fn test_backref_borrowed_miri() {
 
     assert!(iovs.iovs().is_err());
 
-    iovs.backfill(backref, b"a");
+    iovs.backfill_or_panic(backref, b"a");
     assert!(iovs.iovs().is_err());
     // We can read the first slice now.
     assert_eq!(&*iovs.front().unwrap(), b"a");
 
-    iovs.backfill(other_backref, b"bb");
+    iovs.backfill_or_panic(other_backref, b"bb");
 
     assert!(iovs.iovs().is_ok());
 
@@ -946,11 +946,11 @@ fn test_backref_borrowed2_miri() {
 
     assert!(iovs.iovs().is_err());
 
-    iovs.backfill(backref, b"a");
+    iovs.backfill_or_panic(backref, b"a");
     assert!(iovs.iovs().is_err());
     assert!(iovs.front().is_none()); // still waiting for the second backref
 
-    iovs.backfill(other_backref, b"bb");
+    iovs.backfill_or_panic(other_backref, b"bb");
     assert_eq!(&*iovs.front().unwrap(), b"a123bb");
 
     assert!(iovs.iovs().is_ok());
@@ -970,11 +970,11 @@ fn test_backref_all_borrowed_miri() {
 
     assert!(iovs.iovs().is_err());
 
-    iovs.backfill(backref, b"a");
+    iovs.backfill_or_panic(backref, b"a");
     assert!(iovs.iovs().is_err());
     assert_eq!(&*iovs.front().unwrap(), b"a");
 
-    iovs.backfill(other_backref, b"bb");
+    iovs.backfill_or_panic(other_backref, b"bb");
 
     assert!(iovs.iovs().is_ok());
 
