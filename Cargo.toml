@@ -4,6 +4,7 @@ members = [
   "hcobs",
   "owning_iovec",
   "sliding_deque",
+  "trivial_zip_wrapper",
   "vouched_time",
 ]
 
