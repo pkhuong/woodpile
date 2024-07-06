@@ -6,6 +6,7 @@ members = [
   "rough_tlv",
   "sliding_deque",
   "vouched_time",
+  "woodpile",
 ]
 
 resolver = "2"
