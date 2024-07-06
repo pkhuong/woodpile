@@ -1,0 +1,26 @@
+[package]
+name = "woodpile"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hcobs = { path = "../hcobs" }
+owning_iovec = { path = "../owning_iovec" }
+trivial_zip_wrapper = { path = "../trivial_zip_wrapper" }
+vouched_time = { path = "../vouched_time" }
+blake3 = "1"
+itertools = "0.13"
+nix = "0.28"
+tempfile = "3"
+# https://users.rust-lang.org/t/the-state-of-time-in-rust-leaps-and-bounds/107620
+# we only need UTC, and don't really care what happens with leap seconds.
+time = "0.3"
+zip = "2"
+
+[dev-dependencies]
+raffle = "0.0.1"
+test_dir = "0.2"
+time = { version = "0.3", features = ["macros"]}
+
+[lints]
+workspace = true
