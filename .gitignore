@@ -1,0 +1,10 @@
+/target
+*~
+*.swp
+*.swo
+
+Cargo.lock
+
+*.data
+*.data.old
+*.strace
