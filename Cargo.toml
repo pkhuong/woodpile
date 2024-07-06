@@ -6,6 +6,7 @@ members = [
   "sliding_deque",
   "trivial_zip_wrapper",
   "vouched_time",
+  "woodpile",
 ]
 
 resolver = "2"
