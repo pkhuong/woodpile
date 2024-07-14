@@ -98,6 +98,16 @@ impl<'this> Default for Encoder<'this> {
     }
 }
 
+impl<'this> owning_iovec::ZeroCopySink<'this> for Encoder<'this> {
+    fn append_copy(&mut self, bytes: &[u8]) {
+        self.encode_copy(bytes)
+    }
+
+    fn append_borrow(&mut self, bytes: &'this [u8]) {
+        self.encode(bytes)
+    }
+}
+
 impl<'this> Encoder<'this> {
     /// Returns a new encoder with a fresh [`OwningIovec`].
     #[must_use]
