@@ -16,6 +16,8 @@
 //! liveness when we must wait tens off seconds for a lease to expire
 //! whenever a lease holder crashes.
 
+pub mod tlv_array;
+
 // Management
 pub mod close;
 
