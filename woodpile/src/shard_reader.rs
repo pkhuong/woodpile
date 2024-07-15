@@ -84,10 +84,6 @@ impl<R: std::io::Read> ShardReader<R> {
         }
     }
 
-    pub fn into_inner(self) -> R {
-        self.file
-    }
-
     /// Returns the offset (in terms of bytes pulled from the file)
     /// for the first byte of the most recently read (highest offset)
     /// stuff sequence sentinel.

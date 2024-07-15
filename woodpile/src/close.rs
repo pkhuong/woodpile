@@ -1,8 +1,10 @@
 //! This module contains functions to close an epoch subdirectory for
 //! further writes.  Closing an epoch generates a (first-write-wins)
-//! snapshot of the contents of all the log files, at the time the
-//! epoch was closed.  This lets all readers agree on the contents of
-//! the subdirectory, once closed.
+//! snapshot of the *size* of all the log files, at the time the epoch
+//! was closed.  The closing logic looks for partial records and attempts
+//! to reject them.  There should only be one racing write on any file,
+//! so this lets all readers agree on the contents of the subdirectory,
+//! once closed.
 //!
 //! N.B., a racy reader could observe data that only became visible
 //! after the winning snapshot was constructed.  Similarly, a write
@@ -15,15 +17,17 @@
 //! data read or written could have missed the winning snapshot.
 use std::ffi::OsStr;
 use std::io::Result;
+use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
 
-use trivial_zip_wrapper::ZipWrapperWriter;
+use crate::tlv_array;
 
+use owning_iovec::OwningIovec;
 use vouched_time::VouchedTime;
 
 const IN_PROGRESS_MARKER: &str = "000started";
-const SUMMARY_FILE: &str = "100summary.zip";
+const SUMMARY_FILE: &str = "100summary";
 const SUMMARY_TMP_PREFIX: &str = ".woodpile_tmp_summary-";
 
 /// Existence status for a given snapshot file.
@@ -212,6 +216,55 @@ pub struct CloseEpochOptions {
     pub fsync: bool,
 }
 
+fn encode_tlv<'a>(
+    mut iov: OwningIovec<'a>,
+    elements: &mut [(u32, &[u8])],
+) -> Result<OwningIovec<'a>> {
+    iov.push(&hcobs::STUFF_SEQUENCE);
+
+    let mut encoder = hcobs::Encoder::new_from_iovec(iov);
+
+    tlv_array::encode_array(&mut encoder, elements)?;
+
+    let mut iov = encoder.finish();
+    iov.push(&hcobs::STUFF_SEQUENCE);
+    Ok(iov)
+}
+
+fn compute_effective_size(
+    total_size: u64,
+    mut src: impl std::io::Read + std::io::Seek,
+) -> Result<u64> {
+    // XXX: should just use read_exact_at, but that's annoying
+    // for tests.
+    let tail_index = total_size.saturating_sub(4);
+    src.seek(std::io::SeekFrom::Start(tail_index))?;
+
+    // Optimistically assume the last byte we don't see is
+    // the first of a stuff sequence.
+    let mut tail = [hcobs::STUFF_SEQUENCE[0]; 5];
+    // Need at least 4 bytes for a full record (2x delimiters).
+    match src.read_exact(&mut tail[1..]) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(0),
+        Err(e) => return Err(e),
+    }
+
+    let mut end: usize = 1;
+    for (idx, window) in tail.windows(hcobs::STUFF_SEQUENCE.len()).enumerate() {
+        if window == hcobs::STUFF_SEQUENCE {
+            end = idx + 2;
+        }
+    }
+
+    assert!(end >= 1);
+    assert!(end <= tail.len());
+
+    // Drop the invalid part of `tail` (at most 4 bytes).
+    let num_invalid = tail.len() - end;
+    Ok(total_size - num_invalid as u64)
+}
+
 fn close_epoch_subdir_impl(
     subdir: PathBuf,
     now: VouchedTime,
@@ -275,46 +328,50 @@ fn close_epoch_subdir_impl(
         target.pop();
     }
 
-    // We'll go through all the files in the subdir and copy their
-    // bytes to `SUMMARY_FILE`.
-    let (summary, temp_path) = tempfile::Builder::new()
-        .prefix(SUMMARY_TMP_PREFIX)
-        .tempfile_in(&target)?
-        .into_parts();
+    // Add version tag.
+    let mut iov = OwningIovec::new();
+    iov = encode_tlv(
+        iov,
+        &mut [(u32::from_le_bytes(*b"VERS"), &1u32.to_le_bytes())],
+    )?;
 
-    let mut zip = ZipWrapperWriter::new(summary, 0);
-
-    let mut zip_dst = PathBuf::from(target.file_name().expect("target exists")).to_owned();
-
-    // Copy all the data files in `subdir` to the summary zip file.
+    // We'll go through all the files in the subdir and check their tail:
+    // if it looks legit, we'll use that, otherwise truncate just enough
+    // to drop the last (partial) record.
     for item in target.read_dir()? {
         let item = item?;
         assert_eq!(crate::LOG_EXTENSION, "log");
         if item.file_name().as_encoded_bytes().ends_with(b".log") {
             target.push(item.file_name());
-            zip_dst.push(item.file_name());
-            let mut src = std::fs::File::open(&target)?;
+            let src = std::fs::File::open(&target)?;
             let len = src.metadata()?.len();
+            let effective_size = compute_effective_size(len, src)?;
 
-            // At most 12.5% wastage, but we need at least ~50 bytes
-            // for Zip overhead, so we can afford a little bit more.
-            let max_padding = ((len / 8) + 16).min(u32::MAX as u64) as u32;
+            if effective_size > 0 {
+                iov = encode_tlv(
+                    iov,
+                    &mut [
+                        (
+                            u32::from_le_bytes(*b"LOG\x00"),
+                            item.file_name().as_encoded_bytes(),
+                        ),
+                        (
+                            u32::from_le_bytes(*b"LEN\x01"),
+                            &effective_size.to_le_bytes(),
+                        ),
+                    ],
+                )?;
+            }
 
-            zip.copy_file_aligned(
-                zip_dst.as_os_str().to_string_lossy().to_string(),
-                &mut src,
-                len,
-                128 * 1024,  // Always try to align to 128K
-                max_padding, // But limit padding to scale with payload size
-            )?;
-
-            zip_dst.pop();
             target.pop();
         }
     }
 
-    let summary = zip.finish()?;
-
+    let (mut summary, temp_path) = tempfile::Builder::new()
+        .prefix(SUMMARY_TMP_PREFIX)
+        .tempfile_in(&target)?
+        .into_parts();
+    summary.write_all(&iov.flatten().expect("no backref"))?;
     // The summary tempfile is now fully populated. We
     // want to publish it at `target`.
     target.push(SUMMARY_FILE);
@@ -336,7 +393,7 @@ fn close_epoch_subdir_impl(
     // Close the file before persisting it, for close-to-open
     // consistency.
     summary.sync_all()?;
-    std::mem::drop(summary);
+    std::mem::drop(summary); // XXX: would be nice to error check close(2)
 
     temp_path.persist_noclobber(&target)?;
     Ok(None)
@@ -407,9 +464,6 @@ pub fn close_epoch_subdir(
 
     Ok(ret)
 }
-
-#[cfg(test)]
-use zip::read::ZipArchive;
 
 /// epoch_subdir_is_being_closed should return false on an empty epoch directory.
 #[cfg(not(miri))]
@@ -929,6 +983,15 @@ fn test_close_one_file() {
         .create(&subdir, FileType::Dir)
         .create(&format!("{}/foo.log", &subdir), FileType::RandomFile(100));
 
+    // Append the stuff sequence, we'll keep everything.
+    std::fs::OpenOptions::new()
+        .append(true)
+        .truncate(false)
+        .open(temp.path(&format!("{}/foo.log", &subdir)))
+        .unwrap()
+        .write_all(&hcobs::STUFF_SEQUENCE)
+        .unwrap();
+
     let (summary_path, _depth) = closed_subdir_summary_path(temp.path(&subdir));
 
     // start_closing_epoch_subdir succeeds
@@ -956,30 +1019,53 @@ fn test_close_one_file() {
     // The epoch is now marked as being closed.
     assert!(epoch_subdir_is_being_closed(temp.path(&subdir)).unwrap());
 
-    let mut summary = ZipArchive::new(std::fs::File::open(summary_path).unwrap()).unwrap();
-    // One file.
-    assert_eq!(summary.len(), 1);
-    for idx in 0..summary.len() {
-        use std::io::Read;
+    let mut summary: &[u8] = &std::fs::read(summary_path).unwrap();
+    let mut stream_reader = hcobs::StreamReader::new();
 
-        let mut entry = summary.by_index(idx).unwrap();
+    // Version 1
+    {
+        let (iov, _) = stream_reader
+            .next_record_bytes(&mut summary, |_, _| hcobs::StreamAction::KeepGoing, None)
+            .unwrap()
+            .unwrap();
 
-        assert!(entry.is_file());
+        let contents = iov.flatten().unwrap();
+        let tlv = tlv_array::TLVArray::new(contents.into()).unwrap();
         assert_eq!(
-            entry.name(),
-            format!(
-                "{}/foo.log",
-                Path::new(&subdir).file_name().unwrap().to_string_lossy()
-            )
-        );
-
-        let mut summary_bytes = Vec::new();
-        let _ = entry.read_to_end(&mut summary_bytes); // Disregard invalid CRC
-        assert_eq!(
-            std::fs::read(temp.path(&format!("{}/foo.log", &subdir))).unwrap(),
-            summary_bytes
+            tlv.find(u32::from_le_bytes(*b"VERS")),
+            Some(&1u32.to_le_bytes()[..])
         );
     }
+
+    // One file.
+    {
+        let (iov, _) = stream_reader
+            .next_record_bytes(&mut summary, |_, _| hcobs::StreamAction::KeepGoing, None)
+            .unwrap()
+            .unwrap();
+
+        let contents = iov.flatten().unwrap();
+        let tlv = tlv_array::TLVArray::new(contents.into()).unwrap();
+        assert_eq!(
+            tlv.find(u32::from_le_bytes(*b"LOG\x00")),
+            Some(&b"foo.log"[..])
+        );
+
+        let expected_len = std::fs::read(temp.path(&format!("{}/foo.log", &subdir)))
+            .unwrap()
+            .len() as u64;
+
+        assert_eq!(
+            tlv.find(u32::from_le_bytes(*b"LEN\x01")),
+            Some(&expected_len.to_le_bytes()[..])
+        )
+    }
+
+    // No more
+    assert!(stream_reader
+        .next_record_bytes(&mut summary, |_, _| hcobs::StreamAction::KeepGoing, None)
+        .unwrap()
+        .is_none());
 
     // The dummy file should have been cleaned up.
     assert!(!temp.path(&dummy_temp_file).exists());
@@ -1014,8 +1100,10 @@ fn test_close_two_files() {
     );
     let temp = TestDir::temp()
         .create(&subdir, FileType::Dir)
-        .create(&format!("{}/foo.log", &subdir), FileType::RandomFile(100))
-        .create(&format!("{}/bar.log", &subdir), FileType::RandomFile(100));
+        // These are zero-filled, so the last 4 bytes will be dropped for
+        // not containing the stuff sequence.
+        .create(&format!("{}/foo.log", &subdir), FileType::ZeroFile(100))
+        .create(&format!("{}/bar.log", &subdir), FileType::ZeroFile(100));
 
     // start_closing_epoch_subdir succeeds
     let now = VouchedTime::new(
@@ -1033,37 +1121,71 @@ fn test_close_two_files() {
         None
     );
 
-    let mut expected_contents: HashMap<String, Vec<u8>> = HashMap::new();
+    let mut expected_sizes: HashMap<Vec<u8>, u64> = HashMap::new();
 
+    expected_sizes.insert(
+        b"foo.log".to_vec(),
+        std::fs::read(temp.path(&format!("{}/foo.log", &subdir)))
+            .unwrap()
+            .len() as u64
+            - 4,
+    );
+    expected_sizes.insert(
+        b"bar.log".to_vec(),
+        std::fs::read(temp.path(&format!("{}/bar.log", &subdir)))
+            .unwrap()
+            .len() as u64
+            - 4,
+    );
+
+    let mut summary: &[u8] =
+        &std::fs::read(closed_subdir_summary_path(temp.path(&subdir)).0).unwrap();
+    let mut stream_reader = hcobs::StreamReader::new();
+
+    // Version 1
     {
-        let base = Path::new(&subdir).file_name().unwrap().to_string_lossy();
+        let (iov, _) = stream_reader
+            .next_record_bytes(&mut summary, |_, _| hcobs::StreamAction::KeepGoing, None)
+            .unwrap()
+            .unwrap();
 
-        expected_contents.insert(
-            format!("{}/foo.log", &base),
-            std::fs::read(temp.path(&format!("{}/foo.log", &subdir))).unwrap(),
-        );
-        expected_contents.insert(
-            format!("{}/bar.log", &base),
-            std::fs::read(temp.path(&format!("{}/bar.log", &subdir))).unwrap(),
+        let contents = iov.flatten().unwrap();
+        let tlv = tlv_array::TLVArray::new(contents.into()).unwrap();
+        assert_eq!(
+            tlv.find(u32::from_le_bytes(*b"VERS")),
+            Some(&1u32.to_le_bytes()[..])
         );
     }
 
-    let mut summary = ZipArchive::new(
-        std::fs::File::open(closed_subdir_summary_path(temp.path(&subdir)).0).unwrap(),
-    )
-    .unwrap();
-    // two files.
-    assert_eq!(summary.len(), 2);
-    for idx in 0..summary.len() {
-        use std::io::Read;
+    let mut sizes: std::collections::HashMap<Vec<u8>, u64> = Default::default();
 
-        let mut entry = summary.by_index(idx).unwrap();
+    // 2 files
+    for _ in 0..2 {
+        let (iov, _) = stream_reader
+            .next_record_bytes(&mut summary, |_, _| hcobs::StreamAction::KeepGoing, None)
+            .unwrap()
+            .unwrap();
 
-        assert!(entry.is_file());
-        let mut summary_bytes = Vec::new();
-        let _ = entry.read_to_end(&mut summary_bytes); // Disregard invalid CRC
-        assert_eq!(expected_contents.get(entry.name()), Some(&summary_bytes));
+        let contents = iov.flatten().unwrap();
+        let tlv = tlv_array::TLVArray::new(contents.into()).unwrap();
+        let name = tlv.find(u32::from_le_bytes(*b"LOG\x00")).unwrap();
+        let len = u64::from_le_bytes(
+            tlv.find(u32::from_le_bytes(*b"LEN\x01"))
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        );
+
+        sizes.insert(name.to_vec(), len);
     }
+
+    // No more
+    assert!(stream_reader
+        .next_record_bytes(&mut summary, |_, _| hcobs::StreamAction::KeepGoing, None)
+        .unwrap()
+        .is_none());
+
+    assert_eq!(sizes, expected_sizes);
 }
 
 /// Closing an epoch twice in a row should succeed and find the correct values.
@@ -1092,8 +1214,8 @@ fn test_close_twice() {
     );
     let temp = TestDir::temp()
         .create(&subdir, FileType::Dir)
-        .create(&format!("{}/foo.log", &subdir), FileType::RandomFile(100))
-        .create(&format!("{}/bar.log", &subdir), FileType::RandomFile(80));
+        .create(&format!("{}/foo.log", &subdir), FileType::ZeroFile(100))
+        .create(&format!("{}/bar.log", &subdir), FileType::ZeroFile(80));
 
     // start_closing_epoch_subdir succeeds
     let now = VouchedTime::new(
@@ -1127,37 +1249,72 @@ fn test_close_twice() {
         None
     );
 
-    let mut expected_contents: HashMap<String, Vec<u8>> = HashMap::new();
+    let mut expected_sizes: HashMap<Vec<u8>, u64> = HashMap::new();
 
+    // Drop the last 4 bytes because we didn't find the stuff sequence.
+    expected_sizes.insert(
+        b"foo.log".to_vec(),
+        std::fs::read(temp.path(&format!("{}/foo.log", &subdir)))
+            .unwrap()
+            .len() as u64
+            - 4,
+    );
+    expected_sizes.insert(
+        b"bar.log".to_vec(),
+        std::fs::read(temp.path(&format!("{}/bar.log", &subdir)))
+            .unwrap()
+            .len() as u64
+            - 4,
+    );
+
+    let mut summary: &[u8] =
+        &std::fs::read(closed_subdir_summary_path(temp.path(&subdir)).0).unwrap();
+    let mut stream_reader = hcobs::StreamReader::new();
+
+    // Version 1
     {
-        let base = Path::new(&subdir).file_name().unwrap().to_string_lossy();
+        let (iov, _) = stream_reader
+            .next_record_bytes(&mut summary, |_, _| hcobs::StreamAction::KeepGoing, None)
+            .unwrap()
+            .unwrap();
 
-        expected_contents.insert(
-            format!("{}/foo.log", &base),
-            std::fs::read(temp.path(&format!("{}/foo.log", &subdir))).unwrap(),
-        );
-        expected_contents.insert(
-            format!("{}/bar.log", &base),
-            std::fs::read(temp.path(&format!("{}/bar.log", &subdir))).unwrap(),
+        let contents = iov.flatten().unwrap();
+        let tlv = tlv_array::TLVArray::new(contents.into()).unwrap();
+        assert_eq!(
+            tlv.find(u32::from_le_bytes(*b"VERS")),
+            Some(&1u32.to_le_bytes()[..])
         );
     }
 
-    let mut summary = ZipArchive::new(
-        std::fs::File::open(closed_subdir_summary_path(temp.path(&subdir)).0).unwrap(),
-    )
-    .unwrap();
-    // two files.
-    assert_eq!(summary.len(), 2);
-    for idx in 0..summary.len() {
-        use std::io::Read;
+    let mut sizes: std::collections::HashMap<Vec<u8>, u64> = Default::default();
 
-        let mut entry = summary.by_index(idx).unwrap();
+    // 2 files
+    for _ in 0..2 {
+        let (iov, _) = stream_reader
+            .next_record_bytes(&mut summary, |_, _| hcobs::StreamAction::KeepGoing, None)
+            .unwrap()
+            .unwrap();
 
-        assert!(entry.is_file());
-        let mut summary_bytes = Vec::new();
-        let _ = entry.read_to_end(&mut summary_bytes); // Disregard invalid CRC
-        assert_eq!(expected_contents.get(entry.name()), Some(&summary_bytes));
+        let contents = iov.flatten().unwrap();
+        let tlv = tlv_array::TLVArray::new(contents.into()).unwrap();
+        let name = tlv.find(u32::from_le_bytes(*b"LOG\x00")).unwrap();
+        let len = u64::from_le_bytes(
+            tlv.find(u32::from_le_bytes(*b"LEN\x01"))
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        );
+
+        sizes.insert(name.to_vec(), len);
     }
+
+    // No more
+    assert!(stream_reader
+        .next_record_bytes(&mut summary, |_, _| hcobs::StreamAction::KeepGoing, None)
+        .unwrap()
+        .is_none());
+
+    assert_eq!(sizes, expected_sizes);
 
     // The epoch is marked as being closed.
     assert!(epoch_subdir_is_being_closed(temp.path(&subdir)).unwrap());

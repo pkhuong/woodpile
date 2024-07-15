@@ -13,7 +13,7 @@ use owning_iovec::ZeroCopySink;
 /// Writes out a vector of tag-value pairs to `dst`
 pub fn encode_array<'dst, 'slices>(
     mut dst: impl ZeroCopySink<'dst>,
-    elements: &mut [(u32, Cow<'slices, [u8]>)],
+    elements: &mut [(u32, &[u8])],
 ) -> Result<()>
 where
     'slices: 'dst,
@@ -66,10 +66,8 @@ where
 
     // And now the values
     for (_tag, value) in elements.iter() {
-        match value {
-            Cow::Borrowed(value) => dst.append_borrow(value),
-            Cow::Owned(value) => dst.append_copy(value),
-        }
+        // XXX: would be nice to zero-copy if possible
+        dst.append_copy(value)
     }
 
     Ok(())
@@ -257,11 +255,7 @@ impl<'a> TLVArray<'a> {
 fn test_encode() {
     let mut sink = owning_iovec::OwningIovec::new();
 
-    encode_array(
-        &mut sink,
-        &mut [(1u32, b"asd".into()), (2u32, b"zxcv".to_vec().into())],
-    )
-    .expect("should succeed");
+    encode_array(&mut sink, &mut [(1u32, b"asd"), (2u32, b"zxcv")]).expect("should succeed");
 
     let encoded_bytes = sink.flatten().expect("must be complete");
     let expected: &[&[u8]] = &[
@@ -279,11 +273,7 @@ fn test_encode() {
 fn test_decode() {
     let mut sink = owning_iovec::OwningIovec::new();
 
-    encode_array(
-        &mut sink,
-        &mut [(1u32, b"asd".into()), (2u32, b"zxcv".into())],
-    )
-    .expect("should succeed");
+    encode_array(&mut sink, &mut [(1u32, b"asd"), (2u32, b"zxcv")]).expect("should succeed");
 
     let encoded_bytes = sink.flatten().expect("must be complete");
 

@@ -299,7 +299,6 @@ fn test_happy_path() {
     use std::path::Path;
     use test_dir::{DirBuilder, TestDir};
     use time::macros::datetime;
-    use zip::read::ZipArchive;
 
     let vouch_params = raffle::VouchingParameters::parse_or_die(
         "VOUCH-773ec2a0e62c20cd-f9e079b78e895091-fc1da7b1b77c57cb-594b9cce3091464a",
@@ -371,23 +370,6 @@ fn test_happy_path() {
         .expect("must succeed"),
         None
     );
-
-    let mut summary = ZipArchive::new(
-        std::fs::File::open(temp.path(&format!("{}/100summary.zip", subdir))).unwrap(),
-    )
-    .unwrap();
-    // One file.
-    assert_eq!(summary.len(), 1);
-    for idx in 0..summary.len() {
-        use std::io::Read;
-
-        let mut entry = summary.by_index(idx).unwrap();
-        assert!(entry.is_file());
-
-        let mut summary_bytes = Vec::new();
-        let _ = entry.read_to_end(&mut summary_bytes); // Disregard invalid CRC
-        assert_eq!(b"123456", &*summary_bytes);
-    }
 }
 
 // Make sure we can append to a pre-existing log file.

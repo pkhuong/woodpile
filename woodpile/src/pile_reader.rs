@@ -2,15 +2,16 @@
 //! from all the log shard files in a given pile (time bucket)
 //! directory.
 use std::collections::HashMap;
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::Result;
 use std::ops::Range;
 use std::path::PathBuf;
 
 use time::Duration;
-use zip::read::ZipArchive;
 
 use crate::shard_reader::ShardReader;
+use crate::tlv_array::TLVArray;
 use vouched_time::VouchedTime;
 
 /// Reading records from a woodpile bag yields these structs.
@@ -40,12 +41,6 @@ pub const DEFAULT_MAX_RECORD_SIZE: usize = 1024 * 1024 + 1024; // 1 MB plus some
 /// and renewed before there are less than 20 seconds left.
 pub const DEFAULT_FORCE_CLOSE_GRACE_PERIOD: Duration = Duration::seconds(9);
 
-/// A virtual directory of files.  The first value is the combined file,
-/// and the second is a vector of ranges in the combined file (first value
-/// is a byte offset in the combined file, second is a byte count); the
-/// vector parallels the files in `PileReader::source_files`.
-type VirtualDir = (Option<File>, Vec<(u64, u64)>);
-
 /// A [`PileReader`] grabs all the records from *one* timestamped directory in a log.
 ///
 /// It acts as an iterator over all the records in the directory's log files.
@@ -61,16 +56,9 @@ pub struct PileReader {
     // the PathBuf is the suffix after `pile_dir`.
     source_files: Vec<(PathBuf, u64)>,
     max_record_size: usize,
-    // When populated, we look for the contents of `source_files` at offsets
-    // in `virtual_dir`.
-    //
-    // The first value is the combined file, and the second value gives the
-    // offset of the first byte and the total size for each file in the
-    // virtual dir (the vector parallels `source_files`).
-    //
-    // The combined file is stolen for `current_reader` when we have one,
-    // and put back in `virtual_dir` when we exhaust the reader.
-    virtual_dir: Option<VirtualDir>,
+    // Map from file name to max file size to read.
+    // If this is unpopulated, read everything to the end.
+    source_limits: Option<HashMap<Vec<u8>, u64>>,
 }
 
 /// How should a [`PileReader`] interact with the filesystem that
@@ -256,94 +244,86 @@ impl PileReader {
             next_source_file: 0,
             source_files,
             max_record_size: max_record_size.unwrap_or(DEFAULT_MAX_RECORD_SIZE),
-            virtual_dir: None,
+            source_limits: None,
         }
     }
 
-    /// Creates a new `PileReader` for the log files in the zip `archive`.
+    /// Creates a new `PileReader` for the log files in the summary `summary`.
     ///
-    /// On success, returns the `PileReader`, and true if any of the archived
-    /// files are shorter than expected from `start_offsets`.
-    pub fn new_from_zip_archive(
+    /// On success, returns the `PileReader`, and true if any of the summary
+    /// sizes are shorter than expected from `start_offsets`.
+    pub fn new_from_summary_file(
         pile_dir: PathBuf,
-        mut archive: ZipArchive<File>,
+        mut summary: File,
         start_offsets: Option<&HashMap<PathBuf, u64>>,
         max_record_size: Option<usize>,
     ) -> Result<(Self, bool)> {
-        use std::ffi::OsStr;
-        use std::path::Path;
+        // Max record size if 4KB, more than enough for a file name and a size.
+        let judge = hcobs::StreamReader::chunk_judge(4096, None);
+        let mut stream_reader = hcobs::StreamReader::new();
 
-        let empty = HashMap::new();
-        let start_offsets = start_offsets.unwrap_or(&empty);
-
-        let mut offsets: Vec<(u64, u64)> = Vec::with_capacity(archive.len());
-        let mut source_files: Vec<(PathBuf, u64)> = Vec::with_capacity(archive.len());
-        let mut rewound = false;
-
-        // Count how many offsets we found in `start_offsets`.
-        let mut found = 0usize;
-
-        let subdir = Path::new(pile_dir.file_name().unwrap_or(OsStr::new("")));
-        for idx in 0..archive.len() {
-            let entry = archive.by_index(idx)?;
-
-            if !entry.is_file() {
-                continue;
-            }
-
-            if !entry.name_raw().ends_with(LOG_SUFFIX) {
-                continue;
-            }
-
-            let name = Path::new(entry.name());
-            let Ok(path) = name.strip_prefix(subdir) else {
-                continue;
-            };
-
-            let path = path.to_owned();
-
-            let start_offset = match start_offsets.get(&path).copied() {
-                Some(offset) => {
-                    if offset > 0 {
-                        found += 1;
-                    }
-
-                    offset
+        // Look for version 1
+        match stream_reader.next_record_bytes(&mut summary, &judge, None)? {
+            Some((iov, _)) => {
+                let tlv = TLVArray::new(iov.flatten().unwrap().into())?;
+                if tlv.find(u32::from_le_bytes(*b"VERS")) != Some(&1u32.to_le_bytes()[..]) {
+                    return Err(std::io::Error::other("unexpected summary version"));
                 }
-                None => 0,
-            };
-            let size = entry.size();
-
-            // If the snapshotted file is shorter than expected, we have to
-            // restart from scratch.
-            if start_offset > size {
-                rewound = true;
             }
-
-            offsets.push((entry.data_start(), entry.size()));
-            source_files.push((path, start_offset));
+            None => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "Truncated summary",
+                ))
+            }
         }
 
-        // If we found fewer matching files in the archive than the number of strictly
-        // positive start offsets, we read files that didn't make it to the archive!
-        if found
-            < start_offsets
-                .iter()
-                .filter(|(_path, offset)| **offset > 0)
-                .count()
-        {
-            rewound = true;
+        let mut source_files = Vec::new();
+        let mut source_limits: HashMap<Vec<u8>, u64> = HashMap::new();
+        while let Some((iov, _)) = stream_reader.next_record_bytes(&mut summary, &judge, None)? {
+            use std::os::unix::ffi::OsStringExt;
+            let tlv = TLVArray::new(iov.flatten().unwrap().into())?;
+
+            let Some(name) = tlv.find(u32::from_le_bytes(*b"LOG\x00")) else {
+                return Err(std::io::Error::other("missing LOG tag"));
+            };
+
+            let Some(len) = tlv.find(u32::from_le_bytes(*b"LEN\x01")) else {
+                return Err(std::io::Error::other("missing LEN tag"));
+            };
+
+            let len: std::result::Result<[u8; 8], _> = len.try_into();
+
+            let Ok(len) = len else {
+                return Err(std::io::Error::other("invalid LEN tag"));
+            };
+
+            source_limits.insert(name.to_vec(), u64::from_le_bytes(len));
+            let name = PathBuf::from(OsString::from_vec(name.to_vec()));
+            let limit = match &start_offsets {
+                None => 0,
+                Some(map) => map.get(&name).copied().unwrap_or(0),
+            };
+            source_files.push((name, limit));
         }
 
-        if rewound {
+        let any_overrun = match start_offsets {
+            None => false,
+            Some(offsets) => offsets.iter().any(|(key, start_offset)| {
+                let name = key.as_os_str().as_encoded_bytes();
+                *start_offset > source_limits.get(name).copied().unwrap_or(0)
+            }),
+        };
+
+        if any_overrun {
             for entry in source_files.iter_mut() {
+                // Clear the start offsets, we have to re-read everything.
                 entry.1 = 0;
             }
         }
 
-        let file = archive.into_inner();
-        // Update the base vouched time while we have a file.
-        vouched_time::nfs_voucher::maybe_observe_file_time(&file);
+        // Might as well update the base time if necessary.
+        vouched_time::nfs_voucher::maybe_observe_file_time(&summary);
 
         Ok((
             PileReader {
@@ -352,9 +332,9 @@ impl PileReader {
                 next_source_file: 0,
                 source_files,
                 max_record_size: max_record_size.unwrap_or(DEFAULT_MAX_RECORD_SIZE),
-                virtual_dir: Some((Some(file), offsets)),
+                source_limits: Some(source_limits),
             },
-            rewound,
+            any_overrun,
         ))
     }
 
@@ -457,9 +437,9 @@ impl PileReader {
             }
 
             if have_summary_file {
-                let (inner, rewound) = Self::new_from_zip_archive(
+                let (inner, rewound) = Self::new_from_summary_file(
                     pile_dir,
-                    ZipArchive::new(File::open(summary_path)?)?,
+                    File::open(summary_path)?,
                     Some(start_offsets),
                     Some(options.max_record_size),
                 )?;
@@ -608,50 +588,41 @@ impl PileReader {
                     self.next_source_file += 1;
 
                     offset = *read_offset;
-                    if let Some((storage, ranges)) = self.virtual_dir.as_mut() {
-                        // Populated initially, and whenever `current_reader` turns into `None`.
-                        let mut file = storage
-                            .take()
-                            .expect("should be populated since current_reader isn't.");
-                        let (begin, size) = *ranges
-                            .get(self.next_source_file - 1)
-                            .expect("should parallel source files");
+                    let mut file = File::open(self.pile_dir.join(path))?;
+                    // We cap at the current file size so that, if we find a
+                    // partial record, it'll always be at the end: if we were
+                    // to race with multiple writes and catch up at the end,
+                    // we wouldn't revisit the hole in the middle.
+                    //
+                    // We also use nfs_voucher for the metadata to get a base time
+                    // update for free if necessary.
+                    //
+                    // let meta = file.metadata()?;
+                    let meta = vouched_time::nfs_voucher::observe_file_time(&file)?.0;
+                    let len = meta.len();
 
-                        if offset >= size {
-                            // Nothing to read, try again.
-                            *storage = Some(file);
-                            continue;
-                        }
-
-                        file.seek(SeekFrom::Start(offset.saturating_add(begin)))?;
-                        break 'find_non_empty ShardReader::new(
-                            file,
-                            self.max_record_size,
-                            Some(size.saturating_sub(offset)),
-                        );
-                    } else {
-                        let mut file = File::open(self.pile_dir.join(path))?;
-                        // We cap at the current file size so that, if we find a
-                        // partial record, it'll always be at the end: if we were
-                        // to race with multiple writes and catch up at the end,
-                        // we wouldn't revisit the hole in the middle.
-                        //
-                        // We also use nfs_voucher for the metadata to get a base time
-                        // update for free if necessary.
-                        //
-                        // let meta = file.metadata()?;
-                        let meta = vouched_time::nfs_voucher::observe_file_time(&file)?.0;
-                        if offset >= meta.len() {
-                            continue;
-                        }
-
-                        file.seek(SeekFrom::Start(offset))?;
-                        break 'find_non_empty ShardReader::new(
-                            file,
-                            self.max_record_size,
-                            Some(meta.len().saturating_sub(offset)),
-                        );
+                    let source_limit = match &self.source_limits {
+                        Some(limits) => limits
+                            .get(path.as_os_str().as_encoded_bytes())
+                            .copied()
+                            .unwrap_or(0),
+                        None => len,
                     };
+
+                    let len = len.min(source_limit);
+                    // XXX: we need more than 2 bytes for a valid record (need
+                    // the delimiter, then the actual data).  We could compute
+                    // a tighter bound.
+                    if offset.saturating_add(2) >= len {
+                        continue;
+                    }
+
+                    file.seek(SeekFrom::Start(offset))?;
+                    break 'find_non_empty ShardReader::new(
+                        file,
+                        self.max_record_size,
+                        Some(len.saturating_sub(offset)),
+                    );
                 };
 
                 self.current_reader = Some((reader, offset..offset));
@@ -673,13 +644,7 @@ impl PileReader {
 
             // The `current_reader` doesn't know about the bytes we `seek`ed past.
             *max_offset = range.end.max(range.start + reader.last_sentinel_offset());
-            let reader = self
-                .current_reader
-                .take()
-                .expect("we just checked that there's a reader");
-            if let Some(virtual_dir) = self.virtual_dir.as_mut() {
-                virtual_dir.0 = Some(reader.0.into_inner());
-            }
+            self.current_reader = None;
         }
     }
 

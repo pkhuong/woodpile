@@ -75,6 +75,8 @@ fn maintainer(log: woodpile::LogMaintainer) {
             }
 
             let begin = std::time::Instant::now();
+            println!("Begin close {:?} in {:?}", path, begin);
+
             if log
                 .close_subdir(
                     path,
@@ -125,6 +127,8 @@ fn main() -> Result<()> {
     let mut iter = 0u64;
     while observations.len() < 120_000 {
         let begin = std::time::Instant::now();
+        let begin_ts = time::OffsetDateTime::now_utc().unix_timestamp_nanos();
+
         let now = vouched_time::VouchedTime::now_or_die(vouched_time::nfs_voucher::get_base_time);
         let options = woodpile::CacheOptions {
             mode: woodpile::ReaderMode::ReadOnly,
@@ -141,17 +145,14 @@ fn main() -> Result<()> {
             if seen.insert(key) {
                 let send_time = i128::from_le_bytes((&record.payload[0..16]).try_into().unwrap());
                 observations.push(time::Duration::nanoseconds((end - send_time) as i64));
-                observations_from_start.push(time::Duration::nanoseconds(
-                    (now.get_local_time().assume_utc().unix_timestamp_nanos() - send_time) as i64,
-                ));
+                observations_from_start
+                    .push(time::Duration::nanoseconds((begin_ts - send_time) as i64));
                 insertions += 1;
             }
         }
 
         if insertions > 0 {
-            read_durations.push(time::Duration::nanoseconds(
-                (end - now.get_local_time().assume_utc().unix_timestamp_nanos()) as i64,
-            ));
+            read_durations.push(time::Duration::nanoseconds((end - begin_ts) as i64));
         }
 
         if iter % 100 == 0 {
