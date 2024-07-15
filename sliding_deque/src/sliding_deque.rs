@@ -71,13 +71,17 @@ where
     #[must_use]
     #[inline(always)]
     pub fn new() -> Self {
-        Default::default()
+        let ret: Self = Default::default();
+        ret.check_rep();
+        ret
     }
 
     /// Pushes `item` to the back of the [`SlidingDeque`]
     #[inline(always)]
     pub fn push_back(&mut self, item: Container::Item) {
-        self.container.push(item)
+        self.check_rep();
+        self.container.push(item);
+        self.check_rep();
     }
 
     /// Returns a reference to the first element in the [`SlidingDeque`],
@@ -85,6 +89,7 @@ where
     #[must_use]
     #[inline(always)]
     pub fn front(&self) -> Option<&Container::Item> {
+        self.check_rep();
         self.first()
     }
 
@@ -93,15 +98,19 @@ where
     #[must_use]
     #[inline(always)]
     pub fn front_mut(&mut self) -> Option<&mut Container::Item> {
+        self.check_rep();
         self.first_mut()
     }
 
     /// Consumes and returns the first element in the
     /// [`SlidingDeque`], if any.
     pub fn pop_front(&mut self) -> Option<Container::Item> {
+        self.check_rep();
         let ret = *self.front()?;
         self.consumed_prefix += 1;
         self.maybe_slide();
+
+        self.check_rep();
         Some(ret)
     }
 
@@ -110,6 +119,7 @@ where
     #[must_use]
     #[inline(always)]
     pub fn back(&self) -> Option<&Container::Item> {
+        self.check_rep();
         self.last()
     }
 
@@ -118,12 +128,14 @@ where
     #[must_use]
     #[inline(always)]
     pub fn back_mut(&mut self) -> Option<&mut Container::Item> {
+        self.check_rep();
         self.last_mut()
     }
 
     /// Consumes and returns the last element in the [`SlidingDeque`],
     /// if any.
     pub fn pop_back(&mut self) -> Option<Container::Item> {
+        self.check_rep();
         // This checks that we haven't consumed all the elements.
         let ret = *self.back()?;
 
@@ -135,6 +147,7 @@ where
             self.clear();
         }
 
+        self.check_rep();
         Some(ret)
     }
 
@@ -144,6 +157,8 @@ where
     /// be less than `count` if we ran out of values.
     #[must_use]
     pub fn advance(&mut self, count: usize) -> usize {
+        self.check_rep();
+
         let to_consume = self
             .container
             .slice()
@@ -154,6 +169,8 @@ where
         self.consumed_prefix += to_consume;
         self.maybe_slide();
 
+        self.check_rep();
+
         to_consume
     }
 
@@ -163,6 +180,8 @@ where
     pub fn clear(&mut self) {
         self.container.truncate(0);
         self.consumed_prefix = 0;
+
+        self.check_rep();
     }
 
     #[inline(always)]
@@ -172,6 +191,8 @@ where
         if (self.consumed_prefix > self.container.slice().len() / 2) | self.is_empty() {
             self.slide();
         }
+
+        self.check_rep();
     }
 
     /// Removes any previously consumed value from the container.
@@ -182,6 +203,7 @@ where
     pub fn slide(&mut self) {
         #[cfg(not(test))]
         if self.consumed_prefix == 0 {
+            self.check_rep();
             return;
         }
 
@@ -195,6 +217,18 @@ where
                 .saturating_sub(self.consumed_prefix),
         );
         self.consumed_prefix = 0;
+
+        self.check_rep();
+    }
+
+    /// Enforce some invariant on entry/exit of public methods.
+    #[inline(always)]
+    #[cfg_attr(test, mutants::skip)] // obviously, removing checks will not be detected.
+    fn check_rep(&self) {
+        // If we're empty, we should always be in a clean state.
+        debug_assert!(!self.is_empty() || self.consumed_prefix == 0);
+        // We shouldn't waste more than 100% space in the unused prefix.
+        debug_assert!(self.consumed_prefix <= self.container.slice().len() / 2);
     }
 }
 
@@ -311,6 +345,10 @@ fn test_push_back_miri() {
     deque.push_back(2);
     assert_eq!(deque.front(), Some(&1));
     assert_eq!(deque.back(), Some(&2));
+
+    deque.clear();
+    assert_eq!(deque.len(), 0);
+    assert!(deque.is_empty());
 }
 
 #[test]
@@ -413,8 +451,11 @@ fn test_vec_pop_advance_miri() {
 
     deque.push_back(0);
     deque.push_back(1);
+    deque.push_back(2);
+    deque.push_back(3);
 
-    assert_eq!(deque.pop_back(), Some(1));
+    assert_eq!(deque.pop_back(), Some(3));
+    assert_eq!(deque.advance(2), 2);
     assert_eq!(deque.advance(2), 1);
     assert_eq!(deque.pop_back(), None);
 }

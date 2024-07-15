@@ -203,6 +203,7 @@ where
     ///
     /// No-ops if `item` is already erased.
     pub fn push_back_or_panic(&mut self, item: Container::Item) {
+        self.check_rep();
         if self.marker.is_erased(&item) {
             return;
         }
@@ -218,18 +219,24 @@ where
         }
 
         self.items.push_back(item);
+        self.check_rep();
     }
 
     /// Removes all items from `self`.
     #[inline(always)]
     pub fn clear(&mut self) {
-        self.items.clear()
+        self.check_rep();
+
+        self.items.clear();
+        self.check_rep();
     }
 
     /// Determines whether we have no item in the container.
     #[must_use]
     #[inline(always)]
     pub fn is_empty(&self) -> bool {
+        self.check_rep();
+
         self.items.is_empty()
     }
 
@@ -237,6 +244,8 @@ where
     /// in FIFO (and thus sorted) order.
     #[inline(always)]
     pub fn iter(&self) -> impl Iterator<Item = &Container::Item> {
+        self.check_rep();
+
         self.items
             .iter()
             .filter(|item| !self.marker.is_erased(item))
@@ -246,14 +255,21 @@ where
     #[must_use]
     #[inline(always)]
     pub fn first(&self) -> Option<&Container::Item> {
+        self.check_rep();
+
         self.items.front()
     }
 
     /// Consumes and returns the first item.
     #[inline(never)]
     pub fn pop_first(&mut self) -> Option<Container::Item> {
+        self.check_rep();
+
         let ret = self.items.pop_front()?;
         self.cleanup_front();
+
+        self.check_rep();
+
         Some(ret)
     }
 
@@ -261,23 +277,35 @@ where
     #[must_use]
     #[inline(always)]
     pub fn last(&self) -> Option<&Container::Item> {
+        self.check_rep();
+
         self.items.back()
     }
 
     /// Consumes and returns the last item.
     #[inline(never)]
     pub fn pop_last(&mut self) -> Option<Container::Item> {
+        self.check_rep();
+
         let ret = self.items.pop_back()?;
         self.cleanup_back();
+
+        self.check_rep();
+
         Some(ret)
     }
 
     /// Looks for the item that matches `key`.
     #[must_use]
     pub fn find(&self, key: &Marker::Key) -> Option<&Container::Item> {
+        self.check_rep();
+
         let idx = self.find_index(key)?;
 
         let item = &self.items[idx];
+
+        self.check_rep();
+
         if self.marker.is_erased(item) {
             None
         } else {
@@ -318,6 +346,22 @@ where
         }
 
         let _ = self.items.advance(to_drop);
+    }
+
+    #[inline(always)]
+    #[cfg_attr(test, mutants::skip)] // obviously, removing checks will not be detected.
+    fn check_rep(&self) {
+        // First item, if any, must not be erased.
+        debug_assert_ne!(
+            self.items.front().map(|x| self.marker.is_erased(x)),
+            Some(true)
+        );
+
+        // Last item, if any, must not be erased.
+        debug_assert_ne!(
+            self.items.back().map(|x| self.marker.is_erased(x)),
+            Some(true)
+        );
     }
 }
 
@@ -376,6 +420,27 @@ impl SortedDequeItem for TestItem {
     }
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Ord, PartialOrd, Eq, PartialEq)]
+struct KeyOnlyTestItem {
+    key: u32,
+}
+
+#[cfg(test)]
+impl SortedDequeComparator<KeyOnlyTestItem> for () {
+    type Key = u32;
+
+    #[inline(always)]
+    fn extract_key(&self, item: &KeyOnlyTestItem) -> Self::Key {
+        item.key
+    }
+
+    #[inline(always)]
+    fn cmp(&self, x: &u32, y: &u32) -> std::cmp::Ordering {
+        x.cmp(y)
+    }
+}
+
 #[test]
 fn test_happy_path_miri() {
     let mut deque: SortedDeque<Vec<TestItem>> = Default::default();
@@ -397,6 +462,13 @@ fn test_happy_path_miri() {
     assert!(!deque.is_empty());
     assert_eq!(deque.iter().copied().collect::<Vec<_>>(), [item]);
 
+    // Clearing should work
+    deque.clear();
+    assert!(deque.is_empty());
+    assert_eq!(deque.iter().copied().collect::<Vec<_>>(), []);
+
+    // Put it back in.
+    deque.push_back_or_panic(item);
     assert_eq!(deque.first(), Some(&item));
     assert_eq!(deque.last(), Some(&item));
 
@@ -420,6 +492,38 @@ fn test_happy_path_miri() {
     assert_eq!(deque.remove(&item), Some(item));
 
     assert!(deque.is_empty());
+}
+
+#[test]
+fn test_happy_path_key_only_miri() {
+    let mut deque: SortedDeque<Vec<KeyOnlyTestItem>> = Default::default();
+
+    assert!(deque.is_empty());
+    assert_eq!(deque.first(), None);
+    assert_eq!(deque.pop_first(), None);
+    assert_eq!(deque.last(), None);
+    assert_eq!(deque.pop_last(), None);
+
+    let item = KeyOnlyTestItem { key: 0 };
+    assert_eq!(deque.find(&0), None);
+    assert_eq!(deque.iter().copied().collect::<Vec<_>>(), []);
+
+    deque.push_back_or_panic(item);
+    assert!(!deque.is_empty());
+    assert_eq!(deque.iter().copied().collect::<Vec<_>>(), [item]);
+
+    // Clearing should work
+    deque.clear();
+    assert!(deque.is_empty());
+    assert_eq!(deque.iter().copied().collect::<Vec<_>>(), []);
+
+    // Put it back in.
+    deque.push_back_or_panic(item);
+    assert_eq!(deque.first(), Some(&item));
+    assert_eq!(deque.last(), Some(&item));
+
+    // No false match.
+    assert_eq!(deque.find(&1), None);
 }
 
 #[test]
@@ -452,6 +556,8 @@ fn test_remove_middle_miri() {
     deque.push_back_or_panic(items[2]);
     deque.push_back_or_panic(items[3]);
 
+    assert_eq!(deque.iter().map(|x| x.key).collect::<Vec<_>>(), [0, 1, 2]);
+
     assert!(!deque.is_empty());
 
     assert_eq!(deque.first(), Some(&items[0]));
@@ -463,6 +569,7 @@ fn test_remove_middle_miri() {
     assert_eq!(deque.find(&items[3]), None);
 
     assert_eq!(deque.remove(&items[1]), Some(items[1]));
+    assert_eq!(deque.iter().map(|x| x.key).collect::<Vec<_>>(), [0, 2]);
 
     assert_eq!(deque.find(&items[0]), Some(&items[0]));
     assert_eq!(deque.find(&items[1]), None);
