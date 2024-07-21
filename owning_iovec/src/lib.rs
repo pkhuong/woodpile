@@ -56,6 +56,40 @@ impl std::io::Read for ConsumingIovec<'_> {
     }
 }
 
+/// A zero-copy sink can accept a byte slice and copy it to `self`,
+/// or accept a slice with lifetime `'a` and borrow it into `self`.
+pub trait ZeroCopySink<'a> {
+    /// Appends a copy of `bytes` to the sink.
+    fn append_copy(&mut self, bytes: &[u8]);
+
+    /// Appends `bytes` to the `sink`; may (or may not) borrow `bytes`
+    /// instead of copying it.
+    fn append_borrow(&mut self, bytes: &'a [u8]);
+}
+
+impl<'a, T> ZeroCopySink<'a> for &mut T
+where
+    T: ZeroCopySink<'a>,
+{
+    fn append_copy(&mut self, bytes: &[u8]) {
+        T::append_copy(self, bytes);
+    }
+
+    fn append_borrow(&mut self, bytes: &'a [u8]) {
+        T::append_borrow(self, bytes);
+    }
+}
+
+impl<'a> ZeroCopySink<'a> for OwningIovec<'a> {
+    fn append_copy(&mut self, bytes: &[u8]) {
+        self.push_copy(bytes);
+    }
+
+    fn append_borrow(&mut self, bytes: &'a [u8]) {
+        self.push(bytes);
+    }
+}
+
 #[test]
 fn test_read() {
     use std::io::Read;
@@ -83,4 +117,14 @@ fn test_read_short() {
     let mut dst = [0u8; 4];
     assert_eq!(iovec.consumer().read(&mut dst).expect("should succeed"), 4);
     assert_eq!(&dst, b"1234");
+}
+
+#[test]
+fn test_append() {
+    let mut iovec = OwningIovec::new();
+
+    iovec.append_copy(b"123");
+    iovec.append_borrow(b"456");
+
+    assert_eq!(iovec.flatten().expect("no backref"), b"123456");
 }
