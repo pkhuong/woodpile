@@ -201,7 +201,7 @@ where
     /// merely a space optimisation (at the expense of time).
     #[inline(never)]
     pub fn slide(&mut self) {
-        #[cfg(not(test))]
+        #[cfg(not(debug_assertions))]
         if self.consumed_prefix == 0 {
             self.check_rep();
             return;
@@ -226,7 +226,7 @@ where
     #[cfg_attr(test, mutants::skip)] // obviously, removing checks will not be detected.
     fn check_rep(&self) {
         // If we're empty, we should always be in a clean state.
-        debug_assert!(!self.is_empty() || self.consumed_prefix == 0);
+        debug_assert!((!self.is_empty()) | (self.consumed_prefix == 0));
         // We shouldn't waste more than 100% space in the unused prefix.
         debug_assert!(self.consumed_prefix <= self.container.slice().len() / 2);
     }
