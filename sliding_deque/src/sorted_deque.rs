@@ -50,8 +50,8 @@ pub trait SortedDequeComparator<T> {
     /// Defaults to always false; should be overridden when
     /// `SortedDequeMarker` is implemented.
     #[inline(always)]
+    #[allow(unused_variables)] // The default implementation is a stub
     fn is_erased(&self, item: &T) -> bool {
-        let _ = item;
         false
     }
 }
