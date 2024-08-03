@@ -3,6 +3,7 @@
 members = [
   "hcobs",
   "owning_iovec",
+  "rough_tlv",
   "sliding_deque",
   "vouched_time",
 ]
