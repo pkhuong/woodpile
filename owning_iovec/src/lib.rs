@@ -73,20 +73,24 @@ where
     T: ZeroCopySink<'narrow>,
     'wide: 'narrow,
 {
+    #[inline(always)]
     fn append_copy(&mut self, bytes: &[u8]) {
         ZeroCopySink::<'narrow>::append_copy(*self, bytes);
     }
 
+    #[inline(always)]
     fn append_borrow(&mut self, bytes: &'wide [u8]) {
         ZeroCopySink::<'narrow>::append_borrow(*self, bytes);
     }
 }
 
 impl<'a> ZeroCopySink<'a> for OwningIovec<'a> {
+    #[inline(always)]
     fn append_copy(&mut self, bytes: &[u8]) {
         self.push_copy(bytes);
     }
 
+    #[inline(always)]
     fn append_borrow(&mut self, bytes: &'a [u8]) {
         self.push(bytes);
     }
