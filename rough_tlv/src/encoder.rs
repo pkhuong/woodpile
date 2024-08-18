@@ -382,6 +382,18 @@ fn test_encode_miri() {
 }
 
 #[test]
+fn test_encode_empty_miri() {
+    let mut sink = owning_iovec::OwningIovec::new();
+
+    let message = MessageWrapper::<&[u8]>::new(vec![]).unwrap();
+
+    message.to_rough_tlv(&mut sink);
+
+    let encoded_bytes = sink.flatten().expect("must be complete");
+    assert_eq!(encoded_bytes, 0u32.to_le_bytes());
+}
+
+#[test]
 fn test_encode_nested_miri() {
     let mut sink = owning_iovec::OwningIovec::new();
 
@@ -442,13 +454,8 @@ fn test_sorted_tag_unsorted_miri() {
         (2u32.into(), b"asd".into()),
         (1u32.into(), b"zxcv".to_vec().into()),
     ];
-    assert!(format!(
-        "{}",
-        MessageWrapper::<Cow<[u8]>>::new_from_sorted(&payload)
-            .err()
-            .unwrap()
-    )
-    .contains("NonMonotonicTags"));
+
+    MessageWrapper::<Cow<[u8]>>::new_from_sorted(&payload).unwrap();
 }
 
 #[test]
@@ -633,4 +640,16 @@ fn test_encode_nested_out_of_bounds_miri() {
     ]);
     assert!(ok.is_ok());
     assert_eq!(ok.unwrap().rough_tlv_len(), 2070787800);
+}
+
+#[test]
+fn test_error_display_miri() {
+    assert!(
+        format!("{}", EncodingError::NonMonotonicTags((1, 3, 2))).contains("has out-of-order tags")
+    );
+    assert!(format!("{}", EncodingError::TooManyElements(11)).contains("Too many elements"));
+    assert!(format!("{}", EncodingError::ValueTooLarge((1, 20)))
+        .contains("value exceeds maximum byte size"));
+    assert!(format!("{}", EncodingError::TotalTooLarge((10, 20)))
+        .contains("concatenated values exceed maximum byte size"));
 }
