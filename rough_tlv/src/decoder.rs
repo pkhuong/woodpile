@@ -447,3 +447,18 @@ fn test_decode_truncated_payload_miri() {
     assert!(format!("{}", bad.err().unwrap())
         .contains("Rough TLV message is too short for the payload size"));
 }
+
+#[test]
+fn test_error_display_miri() {
+    assert!(format!("{}", DecodingError::ImpossibleHeader(3))
+        .contains("too short to hold the field count"));
+    assert!(format!("{}", DecodingError::TruncatedHeader((3, 4)))
+        .contains("too short for the number of fields"));
+    assert!(format!("{}", DecodingError::NonMonotonicOffsets((1, 3, 2)))
+        .contains("has out-of-order offsets"));
+    assert!(
+        format!("{}", DecodingError::NonMonotonicTags((1, 3, 2))).contains("has out-of-order tags")
+    );
+    assert!(format!("{}", DecodingError::TruncatedPayload((10, 9)))
+        .contains("too short for the payload size"));
+}
