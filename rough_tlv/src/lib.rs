@@ -147,6 +147,18 @@ impl std::convert::From<u32> for Tag {
     }
 }
 
+impl std::convert::From<&[u8; 4]> for Tag {
+    fn from(value: &[u8; 4]) -> Tag {
+        Tag::new(value)
+    }
+}
+
+impl std::convert::From<[u8; 4]> for Tag {
+    fn from(value: [u8; 4]) -> Tag {
+        Tag::new(&value)
+    }
+}
+
 impl std::convert::From<&Tag> for u32 {
     fn from(value: &Tag) -> u32 {
         (*value).into()
@@ -217,6 +229,8 @@ fn test_comparison_miri() {
 fn test_ascii_miri() {
     // A couple tags from the roughtime draft
     assert_eq!(Tag::new(b"SIG\0"), Tag::new_from_u32(0x00474953));
-    assert_eq!(Tag::new(b"ROOT"), Tag::new_from_u32(0x544f4f52));
-    assert_eq!(Tag::new(b"ZZZZ"), Tag::new_from_u32(0x5a5a5a5a));
+    let root: Tag = (*b"ROOT").into();
+    assert_eq!(root, Tag::new_from_u32(0x544f4f52));
+    let zzzz: Tag = b"ZZZZ".into();
+    assert_eq!(zzzz, Tag::new_from_u32(0x5a5a5a5a));
 }
