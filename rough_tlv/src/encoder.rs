@@ -112,9 +112,9 @@ impl<'src> ToRoughTLV<'src> for Cow<'src, str> {
 
 /// Like Cow, except we don't have `to_owned()`.
 #[derive(Debug)]
-enum Entries<'a, Value> {
+enum Entries<'this, Value> {
     Owned(Vec<(Tag, Value)>),
-    Borrowed(&'a [(Tag, Value)]),
+    Borrowed(&'this [(Tag, Value)]),
 }
 
 /// [`MessageWrapper`] wraps a slice or vector of `(Tag, Value)`,
@@ -150,9 +150,13 @@ enum Entries<'a, Value> {
 /// assert_eq!(encoded_bytes, expected.concat());
 /// ```
 #[derive(Debug)]
-pub struct MessageWrapper<'a, Value: ToRoughTLV<'a>> {
+pub struct MessageWrapper<'a, 'this, Value>
+where
+    Value: ToRoughTLV<'a>,
+{
     len: usize,
-    entries: Entries<'a, Value>,
+    entries: Entries<'this, Value>,
+    value_marker: std::marker::PhantomData<&'a [u8]>,
 }
 
 /// Failure reasons for wrapping values as a Roughtime TLV message via
@@ -207,7 +211,7 @@ impl std::fmt::Display for EncodingError {
 
 impl std::error::Error for EncodingError {}
 
-impl<'a, Value: ToRoughTLV<'a>> MessageWrapper<'a, Value> {
+impl<'a, 'this, Value: ToRoughTLV<'a>> MessageWrapper<'a, 'this, Value> {
     /// Returns a [`MessageWrapper`] wrapper for the input elements,
     /// after sorting them in-place if necessary.
     pub fn new(mut elements: Vec<(Tag, Value)>) -> Result<Self, EncodingError> {
@@ -215,12 +219,13 @@ impl<'a, Value: ToRoughTLV<'a>> MessageWrapper<'a, Value> {
         Ok(Self {
             len: Self::compute_len(&elements)?,
             entries: Entries::Owned(elements),
+            value_marker: Default::default(),
         })
     }
 
     /// Returns a [`MessageWrapper`] wrapper for the input elements if
     /// they're already sorted, and an error otherwise
-    pub fn new_from_sorted(elements: &'a [(Tag, Value)]) -> Result<Self, EncodingError> {
+    pub fn new_from_sorted(elements: &'this [(Tag, Value)]) -> Result<Self, EncodingError> {
         for (idx, (cur, next)) in elements.iter().zip(elements.iter().skip(1)).enumerate() {
             if cur.0 > next.0 {
                 return Err(EncodingError::NonMonotonicTags((
@@ -234,16 +239,18 @@ impl<'a, Value: ToRoughTLV<'a>> MessageWrapper<'a, Value> {
         Ok(Self {
             len: Self::compute_len(elements)?,
             entries: Entries::Borrowed(elements),
+            value_marker: Default::default(),
         })
     }
 
     /// Returns a [`MessageWrapper`] wrapper for the input elements,
     /// after sorting them in-place if necessary.
-    pub fn new_from_slice(elements: &'a mut [(Tag, Value)]) -> Result<Self, EncodingError> {
+    pub fn new_from_slice(elements: &'this mut [(Tag, Value)]) -> Result<Self, EncodingError> {
         elements.sort_by_key(|x| x.0);
         Ok(Self {
             len: Self::compute_len(elements)?,
             entries: Entries::Borrowed(elements),
+            value_marker: Default::default(),
         })
     }
 
@@ -332,7 +339,7 @@ impl<'a, Value: ToRoughTLV<'a>> MessageWrapper<'a, Value> {
     }
 }
 
-impl<'src, Value> ToRoughTLV<'src> for MessageWrapper<'src, Value>
+impl<'src, 'this, Value> ToRoughTLV<'src> for MessageWrapper<'src, 'this, Value>
 where
     Value: ToRoughTLV<'src>,
 {
