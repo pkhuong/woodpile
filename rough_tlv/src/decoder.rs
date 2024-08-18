@@ -16,7 +16,7 @@ use crate::Tag;
 /// # use rough_tlv::MessageView;
 /// # let mut sink = owning_iovec::OwningIovec::new();
 /// #
-/// # let mut entries = [(Tag::new_from_u32(1), &b"asd"[..]), (2.into(), &b"zxcv"[..])];
+/// # let mut entries = [(Tag::new(b"TEST"), &b"asd"[..]), (2.into(), &b"zxcv"[..])];
 /// # MessageWrapper::new_from_slice(&mut entries)
 /// #    .unwrap()
 /// #    .to_rough_tlv(&mut sink);
@@ -25,7 +25,7 @@ use crate::Tag;
 /// let encoded_bytes: &[u8] = &encoded_bytes;
 /// let msg = MessageView::new(encoded_bytes.into()).expect("should validate");
 ///
-/// assert_eq!(msg.find(1.into()), Some(&b"asd"[..]));
+/// assert_eq!(msg.find(b"TEST"), Some(&b"asd"[..]));
 /// assert_eq!(msg.find(Tag::new_from_u32(2)), Some(&b"zxcv"[..]));
 /// ```
 #[repr(transparent)]
@@ -215,7 +215,7 @@ impl<'a> MessageView<'a> {
 
     /// Returns the value associated with tag `wanted`, if any.
     #[inline(always)]
-    pub fn find(&self, wanted: Tag) -> Option<&[u8]> {
+    pub fn find(&self, wanted: impl Into<Tag>) -> Option<&[u8]> {
         self.get_value(self.find_tag(wanted)?)
     }
 
@@ -244,8 +244,13 @@ impl<'a> MessageView<'a> {
     }
 
     /// Returns the index of tag `wanted`, if any.
-    pub fn find_tag(&self, wanted: Tag) -> Option<usize> {
-        self.tags().binary_search(&wanted).ok()
+    #[inline(always)]
+    pub fn find_tag(&self, wanted: impl Into<Tag>) -> Option<usize> {
+        fn doit(this: &MessageView, wanted: Tag) -> Option<usize> {
+            this.tags().binary_search(&wanted).ok()
+        }
+
+        doit(self, wanted.into())
     }
 
     /// Returns the value at `index`, if any.
@@ -322,15 +327,15 @@ fn test_decode_miri() {
     assert_eq!(msg.get_value(usize::MAX), None);
 
     assert_eq!(msg.find_tag(Tag::new_from_u32(1)), Some(0));
-    assert_eq!(msg.find_tag(2.into()), Some(1));
-    assert_eq!(msg.find_tag(0.into()), None);
-    assert_eq!(msg.find_tag(3.into()), None);
-    assert_eq!(msg.find_tag(u32::MAX.into()), None);
+    assert_eq!(msg.find_tag(2u32), Some(1));
+    assert_eq!(msg.find_tag(0u32), None);
+    assert_eq!(msg.find_tag(3u32), None);
+    assert_eq!(msg.find_tag(u32::MAX), None);
 
-    assert_eq!(msg.find(0.into()), None);
+    assert_eq!(msg.find(0u32), None);
     assert_eq!(msg.find(Tag::new_from_u32(1)), Some(&b"asd"[..]));
-    assert_eq!(msg.find(2.into()), Some(&b"zxcv"[..]));
-    assert_eq!(msg.find(3.into()), None);
+    assert_eq!(msg.find(2), Some(&b"zxcv"[..]));
+    assert_eq!(msg.find(3), None);
 
     assert_eq!(&msg.into_inner(), &encoded_bytes);
 }
@@ -423,7 +428,7 @@ fn test_decode_truncated_last_payload_miri() {
         msg.find(Tag::new_from_u32(10)),
         Some(&u32::MAX.to_le_bytes()[..])
     );
-    assert_eq!(msg.find(13.into()), Some(&[][..]));
+    assert_eq!(msg.find(13u32), Some(&[][..]));
 }
 
 // But we can tell when deeper payloads were truncated.
