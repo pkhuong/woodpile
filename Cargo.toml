@@ -3,9 +3,11 @@
 members = [
   "hcobs",
   "owning_iovec",
+  "rough_tlv",
   "sliding_deque",
   "trivial_zip_wrapper",
   "vouched_time",
+  "woodpile",
 ]
 
 resolver = "2"

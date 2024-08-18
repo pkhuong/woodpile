@@ -99,10 +99,12 @@ impl<'this> Default for Encoder<'this> {
 }
 
 impl<'this> owning_iovec::ZeroCopySink<'this> for Encoder<'this> {
+    #[inline(always)]
     fn append_copy(&mut self, bytes: &[u8]) {
         self.encode_copy(bytes)
     }
 
+    #[inline(always)]
     fn append_borrow(&mut self, bytes: &'this [u8]) {
         self.encode(bytes)
     }

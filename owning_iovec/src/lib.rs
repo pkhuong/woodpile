@@ -68,24 +68,29 @@ pub trait ZeroCopySink<'a> {
     fn append_borrow(&mut self, bytes: &'a [u8]);
 }
 
-impl<'a, T> ZeroCopySink<'a> for &mut T
+impl<'wide, 'narrow, T> ZeroCopySink<'wide> for &mut T
 where
-    T: ZeroCopySink<'a>,
+    T: ZeroCopySink<'narrow>,
+    'wide: 'narrow,
 {
+    #[inline(always)]
     fn append_copy(&mut self, bytes: &[u8]) {
-        T::append_copy(self, bytes);
+        ZeroCopySink::<'narrow>::append_copy(*self, bytes);
     }
 
-    fn append_borrow(&mut self, bytes: &'a [u8]) {
-        T::append_borrow(self, bytes);
+    #[inline(always)]
+    fn append_borrow(&mut self, bytes: &'wide [u8]) {
+        ZeroCopySink::<'narrow>::append_borrow(*self, bytes);
     }
 }
 
 impl<'a> ZeroCopySink<'a> for OwningIovec<'a> {
+    #[inline(always)]
     fn append_copy(&mut self, bytes: &[u8]) {
         self.push_copy(bytes);
     }
 
+    #[inline(always)]
     fn append_borrow(&mut self, bytes: &'a [u8]) {
         self.push(bytes);
     }
@@ -125,12 +130,18 @@ fn test_append_miri() {
     let mut iovec = OwningIovec::new();
 
     {
-        let dst = &mut &mut iovec;
+        fn append_static(dst: &mut dyn ZeroCopySink<'static>) {
+            dst.append_copy(b"123");
+            dst.append_borrow(b"");
+            dst.append_borrow(b"456");
+            dst.append_copy(b"");
+        }
 
-        dst.append_copy(b"123");
-        dst.append_borrow(b"");
-        dst.append_borrow(b"456");
-        dst.append_copy(b"");
+        fn append_dyn<'a>(mut dst: &mut impl ZeroCopySink<'a>) {
+            append_static(&mut dst);
+        }
+
+        append_dyn(&mut iovec);
     }
 
     assert_eq!(iovec.flatten().expect("no backref"), b"123456");

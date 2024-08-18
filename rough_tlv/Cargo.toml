@@ -1,0 +1,10 @@
+[package]
+name = "rough_tlv"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+owning_iovec = { path = "../owning_iovec" }
+
+[lints]
+workspace = true
